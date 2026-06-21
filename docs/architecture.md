@@ -20,6 +20,46 @@ SDKs. Security decisions remain deterministic and independent of an LLM.
 The durable rationale is recorded in
 [ADR 0001](adr/0001-modular-monolith.md).
 
+## Tool Call Execution Pipeline v1
+
+`ToolCall` and `ToolResultMetadata` are framework-independent domain entities. A call
+uses the strict lifecycle `received → validating → rejected` or
+`received → validating → executing → succeeded|failed|timed_out`. Terminal calls cannot
+transition again.
+
+Execution resolves an active session and an enabled `(tool name, version)` from the
+trusted registry. Arguments are canonicalized, bounded, and validated with the restricted
+JSON Schema Draft 2020-12 subset before an adapter can run. Adapter types resolve through
+an immutable, explicitly constructed mapping containing only `mock_github`, `mock_email`,
+and `mock_database`; database values are never treated as import paths.
+
+The persistence boundary intentionally has no argument or result body columns. It stores
+SHA-256 hashes, lifecycle state, safe error metadata, and result size/content/schema
+metadata. The validated result is returned only to the direct caller.
+
+### Transactions, idempotency, and sequences
+
+The first short transaction locks the session row, verifies prerequisites, allocates the
+next sequence, inserts `received`, and commits. State transitions use additional short
+transactions. The adapter coroutine runs with a timeout and no open PostgreSQL
+transaction. Result metadata and the terminal transition commit atomically.
+
+Per-session sequence allocation uses `SELECT ... FOR UPDATE` on the parent session before
+calculating the next value. `uq_tool_calls_session_sequence` remains a database backstop.
+
+Idempotency uses `uq_tool_calls_idempotency_key` plus the canonical request hash. A
+different request with the same key conflicts. A concurrent duplicate returns
+`execution_in_progress` and cannot invoke the adapter. Because raw results cannot yet be
+persisted, successful same-process retries use a process-local response cache; after
+process loss, ToolWatch fails closed instead of repeating a possible side effect.
+
+There is no distributed transaction with an adapter. A process crash after an adapter
+side effect and before terminal persistence can leave an `executing` row. Adapter
+cancellation after timeout is cooperative. Automatic retries and recovery workers are
+deliberately deferred.
+
+These choices are recorded in [ADR 0003](adr/0003-tool-call-execution-v1.md).
+
 ## Milestone 2 domain and persistence
 
 The first domain entities are:

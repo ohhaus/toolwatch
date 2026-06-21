@@ -42,7 +42,10 @@ async def clean_database(migrated_database_url: str) -> AsyncIterator[str]:
     engine = create_async_engine(migrated_database_url)
     async with engine.begin() as connection:
         await connection.execute(
-            text("TRUNCATE agent_sessions, tool_definitions, agents RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE tool_result_metadata, tool_calls, agent_sessions, "
+                "tool_definitions, agents RESTART IDENTITY CASCADE"
+            )
         )
     await engine.dispose()
     yield migrated_database_url

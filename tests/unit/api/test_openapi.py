@@ -12,7 +12,14 @@ def test_openapi_documents_registry_and_session_contracts() -> None:
     assert "/api/v1/sessions" in paths
     assert "/api/v1/sessions/{session_id}" in paths
     assert "/api/v1/sessions/{session_id}/complete" in paths
+    assert "/api/v1/tool-calls" in paths
+    assert "/api/v1/tool-calls/{call_id}" in paths
+    assert "/api/v1/sessions/{session_id}/tool-calls" in paths
     assert "409" in paths["/api/v1/tools"]["post"]["responses"]
     assert "422" in paths["/api/v1/tools"]["post"]["responses"]
+    execute = paths["/api/v1/tool-calls"]["post"]
+    assert any(parameter["name"] == "Idempotency-Key" for parameter in execute["parameters"])
+    assert {"409", "422", "502", "504"} <= set(execute["responses"])
     assert "RiskLevel" in schema["components"]["schemas"]
     assert "SessionStatus" in schema["components"]["schemas"]
+    assert "ToolCallStatus" in schema["components"]["schemas"]

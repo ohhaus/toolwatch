@@ -15,7 +15,9 @@ from toolwatch.application.ports import (
     Page,
     RepositoryConflict,
     SessionRepository,
+    ToolCallRepository,
     ToolRepository,
+    ToolResultMetadataRepository,
 )
 from toolwatch.application.sessions import CreateSession, SessionService
 from toolwatch.application.tools import TOOL_UNIQUE_CONSTRAINT, ToolService
@@ -126,11 +128,15 @@ class MemoryUnitOfWork:
     agents: AgentRepository
     tools: ToolRepository
     sessions: SessionRepository
+    tool_calls: ToolCallRepository
+    tool_results: ToolResultMetadataRepository
 
     def __init__(self) -> None:
         self.agents = MemoryAgents()
         self.tools = MemoryTools()
         self.sessions = MemorySessions()
+        self.tool_calls = cast(ToolCallRepository, object())
+        self.tool_results = cast(ToolResultMetadataRepository, object())
         self.commits = 0
 
     async def __aenter__(self) -> Self:

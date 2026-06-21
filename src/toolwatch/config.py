@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=10, ge=0)
     database_connect_timeout_seconds: float = Field(default=5.0, gt=0)
     store_prompts: bool = False
+    default_tool_timeout_seconds: float = Field(default=10.0, gt=0, le=60.0)
+    max_tool_timeout_seconds: float = Field(default=30.0, gt=0, le=300.0)
+    max_tool_arguments_bytes: int = Field(default=65_536, ge=1)
+    max_tool_result_bytes: int = Field(default=524_288, ge=1)
+    max_json_depth: int = Field(default=20, ge=1, le=100)
+    max_string_length: int = Field(default=51_200, ge=1)
 
 
 @lru_cache(maxsize=1)

@@ -42,6 +42,14 @@ class ConflictErrorResponse(ErrorResponse):
     """OpenAPI model for conflicting writes or state transitions."""
 
 
+class BadGatewayErrorResponse(ErrorResponse):
+    """OpenAPI model for sanitized adapter failures."""
+
+
+class GatewayTimeoutErrorResponse(ErrorResponse):
+    """OpenAPI model for sanitized adapter timeouts."""
+
+
 def register_error_handlers(application: FastAPI) -> None:
     """Register fixed handlers that never expose infrastructure exceptions."""
 
@@ -55,6 +63,8 @@ def error_responses(
     *,
     not_found: bool = False,
     conflict: bool = False,
+    bad_gateway: bool = False,
+    gateway_timeout: bool = False,
 ) -> dict[int | str, dict[str, Any]]:
     """Build reusable OpenAPI response declarations."""
 
@@ -66,6 +76,10 @@ def error_responses(
         responses[status.HTTP_404_NOT_FOUND] = {"model": NotFoundErrorResponse}
     if conflict:
         responses[status.HTTP_409_CONFLICT] = {"model": ConflictErrorResponse}
+    if bad_gateway:
+        responses[status.HTTP_502_BAD_GATEWAY] = {"model": BadGatewayErrorResponse}
+    if gateway_timeout:
+        responses[status.HTTP_504_GATEWAY_TIMEOUT] = {"model": GatewayTimeoutErrorResponse}
     return responses
 
 
@@ -96,6 +110,20 @@ def _message_for(code: str) -> str:
         "tool_version_already_exists": "The tool version is already registered.",
         "tool_not_found": "The tool was not found.",
         "session_not_found": "The session was not found.",
+        "session_not_active": "The session is not active.",
         "invalid_session_transition": "The session transition is not allowed.",
+        "tool_disabled": "The tool is disabled.",
+        "tool_call_not_found": "The tool call was not found.",
+        "invalid_tool_arguments": "Tool arguments do not match the registered schema.",
+        "adapter_not_configured": "The trusted adapter is not configured.",
+        "tool_execution_failed": "The trusted tool adapter failed.",
+        "mock_query_not_supported": "The mock database query is not supported.",
+        "tool_timeout": "The trusted tool adapter timed out.",
+        "invalid_tool_result": "The trusted tool adapter returned an invalid result.",
+        "tool_arguments_too_large": "Tool arguments exceed the configured size limit.",
+        "tool_result_too_large": "The tool result exceeds the configured size limit.",
+        "tool_payload_too_deep": "The tool payload exceeds the configured depth limit.",
+        "idempotency_conflict": "The idempotency key was reused for another request.",
+        "execution_in_progress": "An execution with this idempotency key is in progress.",
     }
     return messages.get(code, "The request could not be completed.")

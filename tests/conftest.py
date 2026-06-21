@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+from toolwatch.api.dependencies import get_adapter_registry, get_terminal_response_cache
 from toolwatch.config import get_settings
 from toolwatch.infrastructure.database.engine import dispose_engine, get_engine
 
@@ -13,7 +14,11 @@ async def reset_cached_dependencies() -> AsyncIterator[None]:
     """Keep environment-derived dependencies isolated between tests."""
 
     get_settings.cache_clear()
+    get_adapter_registry.cache_clear()
+    get_terminal_response_cache.cache_clear()
     get_engine.cache_clear()
     yield
     await dispose_engine()
     get_settings.cache_clear()
+    get_adapter_registry.cache_clear()
+    get_terminal_response_cache.cache_clear()

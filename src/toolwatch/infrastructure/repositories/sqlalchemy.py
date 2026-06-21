@@ -13,11 +13,19 @@ from toolwatch.application.ports import Page, RepositoryConflict
 from toolwatch.domain.agents import Agent, AgentIdentity
 from toolwatch.domain.common import JSONObject
 from toolwatch.domain.sessions import AgentSession, SessionStatus
+from toolwatch.domain.tool_calls import (
+    ToolCall,
+    ToolCallDecision,
+    ToolCallStatus,
+    ToolResultMetadata,
+)
 from toolwatch.domain.tools import RiskLevel, ToolDefinition
 from toolwatch.infrastructure.database.models import (
     AgentModel,
     AgentSessionModel,
+    ToolCallModel,
     ToolDefinitionModel,
+    ToolResultMetadataModel,
 )
 
 
@@ -222,6 +230,114 @@ class SqlAlchemySessionRepository:
         return _session_from_model(model)
 
 
+class SqlAlchemyToolCallRepository:
+    """Persist and query payload-free tool-call lifecycles."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_id(self, call_id: UUID) -> ToolCall | None:
+        model = await self._session.get(ToolCallModel, call_id)
+        return _tool_call_from_model(model) if model is not None else None
+
+    async def get_by_idempotency_key(self, key: UUID) -> ToolCall | None:
+        statement = select(ToolCallModel).where(ToolCallModel.idempotency_key == key)
+        model = await self._session.scalar(statement)
+        return _tool_call_from_model(model) if model is not None else None
+
+    async def list(
+        self,
+        *,
+        session_id: UUID,
+        status: ToolCallStatus | None,
+        limit: int,
+        offset: int,
+    ) -> Page[ToolCall]:
+        conditions: list[ColumnElement[bool]] = [ToolCallModel.session_id == session_id]
+        if status is not None:
+            conditions.append(ToolCallModel.status == status.value)
+        statement = (
+            select(ToolCallModel)
+            .where(*conditions)
+            .order_by(ToolCallModel.sequence_number, ToolCallModel.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        count_statement = select(func.count()).select_from(ToolCallModel).where(*conditions)
+        models = list((await self._session.scalars(statement)).all())
+        total = int((await self._session.scalar(count_statement)) or 0)
+        return Page(
+            items=[_tool_call_from_model(model) for model in models],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def next_sequence_number(self, session_id: UUID) -> int:
+        statement = select(func.max(ToolCallModel.sequence_number)).where(
+            ToolCallModel.session_id == session_id
+        )
+        current = await self._session.scalar(statement)
+        return int(current or 0) + 1
+
+    async def create(self, call: ToolCall) -> ToolCall:
+        model = _tool_call_to_model(call)
+        self._session.add(model)
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            constraint = _constraint_name(exc)
+            raise RepositoryConflict(str(constraint or "unknown_constraint")) from exc
+        return _tool_call_from_model(model)
+
+    async def update(self, call: ToolCall) -> ToolCall:
+        model = await self._session.get(ToolCallModel, call.id)
+        if model is None:
+            raise RuntimeError("tool call disappeared during update")
+        model.status = call.status.value
+        model.decision = call.decision.value
+        model.started_at = call.started_at
+        model.finished_at = call.finished_at
+        model.duration_ms = call.duration_ms
+        model.error_code = call.error_code
+        model.error_message_safe = call.error_message_safe
+        model.updated_at = call.updated_at
+        await self._session.flush()
+        return _tool_call_from_model(model)
+
+
+class SqlAlchemyToolResultMetadataRepository:
+    """Persist one safe result metadata row per tool call."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_tool_call_id(self, call_id: UUID) -> ToolResultMetadata | None:
+        statement = select(ToolResultMetadataModel).where(
+            ToolResultMetadataModel.tool_call_id == call_id
+        )
+        model = await self._session.scalar(statement)
+        return _tool_result_from_model(model) if model is not None else None
+
+    async def create(self, metadata: ToolResultMetadata) -> ToolResultMetadata:
+        model = ToolResultMetadataModel(
+            id=metadata.id,
+            tool_call_id=metadata.tool_call_id,
+            payload_hash=metadata.payload_hash,
+            content_type=metadata.content_type,
+            size_bytes=metadata.size_bytes,
+            schema_valid=metadata.schema_valid,
+            created_at=metadata.created_at,
+        )
+        self._session.add(model)
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            constraint = _constraint_name(exc)
+            raise RepositoryConflict(str(constraint or "unknown_constraint")) from exc
+        return _tool_result_from_model(model)
+
+
 def _agent_from_model(model: AgentModel) -> Agent:
     return Agent(
         id=model.id,
@@ -280,6 +396,62 @@ def _session_from_model(model: AgentSessionModel) -> AgentSession:
         started_at=model.started_at,
         finished_at=model.finished_at,
         metadata=cast(JSONObject, model.metadata_),
+    )
+
+
+def _tool_call_to_model(call: ToolCall) -> ToolCallModel:
+    return ToolCallModel(
+        id=call.id,
+        session_id=call.session_id,
+        tool_definition_id=call.tool_definition_id,
+        parent_call_id=call.parent_call_id,
+        sequence_number=call.sequence_number,
+        arguments_hash=call.arguments_hash,
+        request_hash=call.request_hash,
+        idempotency_key=call.idempotency_key,
+        status=call.status.value,
+        decision=call.decision.value,
+        started_at=call.started_at,
+        finished_at=call.finished_at,
+        duration_ms=call.duration_ms,
+        error_code=call.error_code,
+        error_message_safe=call.error_message_safe,
+        created_at=call.created_at,
+        updated_at=call.updated_at,
+    )
+
+
+def _tool_call_from_model(model: ToolCallModel) -> ToolCall:
+    return ToolCall(
+        id=model.id,
+        session_id=model.session_id,
+        tool_definition_id=model.tool_definition_id,
+        parent_call_id=model.parent_call_id,
+        sequence_number=model.sequence_number,
+        arguments_hash=model.arguments_hash,
+        request_hash=model.request_hash,
+        idempotency_key=model.idempotency_key,
+        status=ToolCallStatus(model.status),
+        decision=ToolCallDecision(model.decision),
+        started_at=model.started_at,
+        finished_at=model.finished_at,
+        duration_ms=model.duration_ms,
+        error_code=model.error_code,
+        error_message_safe=model.error_message_safe,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def _tool_result_from_model(model: ToolResultMetadataModel) -> ToolResultMetadata:
+    return ToolResultMetadata(
+        id=model.id,
+        tool_call_id=model.tool_call_id,
+        payload_hash=model.payload_hash,
+        content_type=model.content_type,
+        size_bytes=model.size_bytes,
+        schema_valid=model.schema_valid,
+        created_at=model.created_at,
     )
 
 

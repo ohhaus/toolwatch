@@ -1,4 +1,4 @@
-.PHONY: install infra-up infra-down run migrate test test-unit test-integration
+.PHONY: install infra-up infra-down run migrate seed test test-unit test-integration
 .PHONY: test-domain test-api
 .PHONY: lint format typecheck check docker-build docker-up docker-down
 
@@ -16,6 +16,9 @@ run:
 
 migrate:
 	uv run alembic upgrade head
+
+seed:
+	uv run python -m toolwatch.seed
 
 test:
 	uv run pytest -m "not local_llm"

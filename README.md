@@ -3,9 +3,9 @@
 ToolWatch is an observability and runtime-safety proxy for AI-agent tool calls. It is
 designed to validate calls, apply deterministic safety controls, redact sensitive data,
 and provide auditability before trusted adapters reach downstream services. The current
-milestone implements a trusted Tool Registry and Agent Sessions backed by PostgreSQL. It
-does not implement tool execution, adapters, LLM integration, risk evaluation, blocking
-rules, audit events, or a dashboard.
+milestone implements the first payload-free execution pipeline for three trusted
+in-process mock adapters. It does not connect to Ollama or any real GitHub, email,
+database, or other external service.
 
 ToolWatch is experimental and is not production-ready.
 
@@ -13,9 +13,9 @@ ToolWatch is experimental and is not production-ready.
 
 The application is a modular monolith with dependency direction
 `API → Application → Domain`; infrastructure implements domain-facing ports. The API
-exposes health checks plus `/api/v1/tools` and `/api/v1/sessions`. Application use cases
-own transaction boundaries; SQLAlchemy repositories do not leak persistence models into
-the domain.
+exposes health checks, registry/session APIs, and `/api/v1/tool-calls`. Application use
+cases own short transaction boundaries; adapter I/O runs outside PostgreSQL transactions.
+Raw arguments and result bodies are never persisted in this milestone.
 
 See [the architecture guide](docs/architecture.md), [product specification](docs/product-spec.md),
 and [threat model](docs/threat-model.md).
@@ -95,6 +95,41 @@ curl -X POST http://localhost:8000/api/v1/sessions/<session-id>/complete \
 Prompt storage is disabled by default (`STORE_PROMPTS=false`), so raw prompts are not
 persisted. Tool adapter configuration is not returned by read APIs. Registering a tool
 does not make any downstream call.
+
+Seed the three reviewed mock definitions explicitly:
+
+```bash
+make seed
+```
+
+Execute each mock tool using the created session ID:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tool-calls \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: 11111111-1111-4111-8111-111111111111' \
+  -d '{"session_id":"<session-id>","tool":"github.list_issues","tool_version":"1.0.0","arguments":{"repository":"demo/backend","state":"open"}}'
+
+curl -X POST http://localhost:8000/api/v1/tool-calls \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: 22222222-2222-4222-8222-222222222222' \
+  -d '{"session_id":"<session-id>","tool":"email.send","tool_version":"1.0.0","arguments":{"recipient":"user@example.com","subject":"Summary","body":"Two open issues."}}'
+
+curl -X POST http://localhost:8000/api/v1/tool-calls \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: 33333333-3333-4333-8333-333333333333' \
+  -d '{"session_id":"<session-id>","tool":"database.query","tool_version":"1.0.0","arguments":{"query":"SELECT id, name FROM projects"}}'
+```
+
+Repeating a request with the same idempotency key and identical body does not invoke the
+adapter again while the terminal response remains in this process. Reusing the key for a
+different request returns `409 idempotency_conflict`; an overlapping duplicate returns
+`409 execution_in_progress`.
+
+Until recursive redaction is implemented, raw tool arguments and results are deliberately
+absent from PostgreSQL and lifecycle logs. Only canonical hashes and safe metadata are
+stored; a validated result is returned directly to the caller. Ollama remains
+disconnected and optional.
 
 Stop local infrastructure with:
 

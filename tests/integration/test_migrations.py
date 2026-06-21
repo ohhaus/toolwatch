@@ -30,11 +30,19 @@ def test_migration_downgrade_and_upgrade(postgres_url: str) -> None:
     assert "agents" not in downgraded_tables
     assert "tool_definitions" not in downgraded_tables
     assert "agent_sessions" not in downgraded_tables
+    assert "tool_calls" not in downgraded_tables
+    assert "tool_result_metadata" not in downgraded_tables
 
     command.upgrade(config, "head")
     upgraded_tables = run(_table_names(postgres_url))
 
-    assert {"agents", "tool_definitions", "agent_sessions"} <= upgraded_tables
+    assert {
+        "agents",
+        "tool_definitions",
+        "agent_sessions",
+        "tool_calls",
+        "tool_result_metadata",
+    } <= upgraded_tables
 
 
 async def _table_names(database_url: str) -> set[str]:

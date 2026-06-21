@@ -17,7 +17,6 @@ from toolwatch.domain.common import (
 )
 
 TOOL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)+$")
-JSON_SCHEMA_TYPES = {"array", "boolean", "integer", "null", "number", "object", "string"}
 SECRET_CONFIG_KEYS = {
     "api_key",
     "apikey",
@@ -98,61 +97,12 @@ def validate_json_schema(
     *,
     object_only: bool,
 ) -> JSONObject:
-    """Validate the structural subset needed to safely store JSON Schema documents."""
+    """Validate a supported JSON Schema Draft 2020-12 document."""
 
     schema = validate_json_object(value, field_name)
-    schema_type = schema.get("type")
-    if object_only and schema_type != "object":
-        raise DomainValidationError(f"{field_name} top-level type must be 'object'")
-    _validate_schema_node(schema, field_name)
-    return schema
+    from toolwatch.security.schema import validate_schema_document
 
-
-def _validate_schema_node(schema: JSONObject, field_name: str) -> None:
-    schema_type = schema.get("type")
-    if schema_type is not None:
-        if isinstance(schema_type, str):
-            if schema_type not in JSON_SCHEMA_TYPES:
-                raise DomainValidationError(f"{field_name} contains an invalid schema type")
-        elif isinstance(schema_type, list):
-            if not schema_type or any(
-                not isinstance(item, str) or item not in JSON_SCHEMA_TYPES for item in schema_type
-            ):
-                raise DomainValidationError(f"{field_name} contains an invalid schema type")
-        else:
-            raise DomainValidationError(f"{field_name} contains an invalid schema type")
-
-    properties = schema.get("properties")
-    if properties is not None:
-        if not isinstance(properties, dict):
-            raise DomainValidationError(f"{field_name}.properties must be an object")
-        for nested in properties.values():
-            if not isinstance(nested, dict):
-                raise DomainValidationError(f"{field_name}.properties values must be objects")
-            _validate_schema_node(nested, field_name)
-
-    required = schema.get("required")
-    if required is not None and (
-        not isinstance(required, list)
-        or any(not isinstance(item, str) for item in required)
-        or len(required) != len(set(required))
-    ):
-        raise DomainValidationError(f"{field_name}.required must contain unique strings")
-    if isinstance(required, list) and isinstance(properties, dict):
-        if any(item not in properties for item in required):
-            raise DomainValidationError(f"{field_name}.required references an unknown property")
-
-    items = schema.get("items")
-    if items is not None:
-        if not isinstance(items, dict):
-            raise DomainValidationError(f"{field_name}.items must be an object")
-        _validate_schema_node(items, field_name)
-
-    additional = schema.get("additionalProperties")
-    if additional is not None and not isinstance(additional, bool | dict):
-        raise DomainValidationError(f"{field_name}.additionalProperties must be boolean or object")
-    if isinstance(additional, dict):
-        _validate_schema_node(additional, field_name)
+    return validate_schema_document(schema, field_name, object_only=object_only)
 
 
 def _reject_secret_config_keys(value: JSONObject) -> None:

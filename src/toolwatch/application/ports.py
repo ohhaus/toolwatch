@@ -8,6 +8,7 @@ from uuid import UUID
 
 from toolwatch.domain.agents import Agent, AgentIdentity
 from toolwatch.domain.sessions import AgentSession, SessionStatus
+from toolwatch.domain.tool_calls import ToolCall, ToolCallStatus, ToolResultMetadata
 from toolwatch.domain.tools import RiskLevel, ToolDefinition
 
 
@@ -85,12 +86,45 @@ class SessionRepository(Protocol):
     async def update_status(self, session: AgentSession) -> AgentSession: ...
 
 
+class ToolCallRepository(Protocol):
+    """Persistence operations required for tool-call execution."""
+
+    async def get_by_id(self, call_id: UUID) -> ToolCall | None: ...
+
+    async def get_by_idempotency_key(self, key: UUID) -> ToolCall | None: ...
+
+    async def list(
+        self,
+        *,
+        session_id: UUID,
+        status: ToolCallStatus | None,
+        limit: int,
+        offset: int,
+    ) -> Page[ToolCall]: ...
+
+    async def next_sequence_number(self, session_id: UUID) -> int: ...
+
+    async def create(self, call: ToolCall) -> ToolCall: ...
+
+    async def update(self, call: ToolCall) -> ToolCall: ...
+
+
+class ToolResultMetadataRepository(Protocol):
+    """Persistence operations for safe result metadata."""
+
+    async def get_by_tool_call_id(self, call_id: UUID) -> ToolResultMetadata | None: ...
+
+    async def create(self, metadata: ToolResultMetadata) -> ToolResultMetadata: ...
+
+
 class UnitOfWork(Protocol):
     """Transaction boundary owned by an application use case."""
 
     agents: AgentRepository
     tools: ToolRepository
     sessions: SessionRepository
+    tool_calls: ToolCallRepository
+    tool_results: ToolResultMetadataRepository
 
     async def __aenter__(self) -> Self: ...
 
