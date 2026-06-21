@@ -1,9 +1,56 @@
 [project]
 name = "toolwatch"
 version = "0.1.0"
-description = "Add your description here"
+description = "Observability and runtime-safety proxy for AI-agent tool calls"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "pre-commit>=4.6.0",
+    "alembic>=1.16.5",
+    "asyncpg>=0.30.0",
+    "fastapi>=0.116.1",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.10.1",
+    "sqlalchemy[asyncio]>=2.0.43",
+    "uvicorn[standard]>=0.35.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.3.0",
+    "pyright>=1.1.405",
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+    "ruff>=0.12.9",
+    "testcontainers[postgres]>=4.12.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: tests that require a real PostgreSQL container",
+    "local_llm: tests that require a developer-managed local LLM",
+]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["toolwatch"]
+
+[tool.pyright]
+include = ["src", "tests", "alembic"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"

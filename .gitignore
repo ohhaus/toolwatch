@@ -7,4 +7,20 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv/
+
+# Local configuration
+.env
+
+# Test and type-check caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+htmlcov/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

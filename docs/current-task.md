@@ -1,5 +1,9 @@
 # Current Task: Bootstrap the ToolWatch Repository
 
+> Implementation status: implemented on 2026-06-22; verification results are recorded in
+> the completing agent's report. This file remains the acceptance contract for
+> Milestone 1.
+
 ## Role
 
 You are bootstrapping the ToolWatch codebase from the existing repository.

@@ -1,0 +1,70 @@
+services:
+  api:
+    build:
+      context: .
+    environment:
+      APP_NAME: ToolWatch
+      APP_VERSION: 0.1.0
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+asyncpg://toolwatch:toolwatch@postgres:5432/toolwatch
+      DATABASE_POOL_SIZE: 5
+      DATABASE_MAX_OVERFLOW: 10
+      DATABASE_CONNECT_TIMEOUT_SECONDS: 5
+    command:
+      - /bin/sh
+      - -c
+      - alembic upgrade head && exec uvicorn toolwatch.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen("http://127.0.0.1:8000/health/live", timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - toolwatch
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: toolwatch
+      POSTGRES_USER: toolwatch
+      POSTGRES_PASSWORD: toolwatch
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toolwatch -d toolwatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - toolwatch
+
+  jaeger:
+    image: jaegertracing/jaeger:2.6.0
+    profiles: ["observability"]
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - toolwatch
+
+volumes:
+  postgres_data:
+
+networks:
+  toolwatch:
