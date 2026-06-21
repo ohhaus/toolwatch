@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from toolwatch.api.errors import register_error_handlers
 from toolwatch.api.router import api_router
 from toolwatch.config import get_settings
 from toolwatch.infrastructure.database.engine import dispose_engine
@@ -27,6 +28,7 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         lifespan=lifespan,
     )
+    register_error_handlers(application)
     application.include_router(api_router)
     return application
 

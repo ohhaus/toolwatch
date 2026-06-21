@@ -11,6 +11,7 @@ services:
       DATABASE_POOL_SIZE: 5
       DATABASE_MAX_OVERFLOW: 10
       DATABASE_CONNECT_TIMEOUT_SECONDS: 5
+      STORE_PROMPTS: "false"
     command:
       - /bin/sh
       - -c

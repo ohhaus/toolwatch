@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     database_pool_size: int = Field(default=5, ge=1)
     database_max_overflow: int = Field(default=10, ge=0)
     database_connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    store_prompts: bool = False
 
 
 @lru_cache(maxsize=1)

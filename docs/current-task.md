@@ -1,41 +1,34 @@
-# Current Task: Bootstrap the ToolWatch Repository
+# Current Task: Tool Registry and Agent Sessions
 
-> Implementation status: implemented on 2026-06-22; verification results are recorded in
-> the completing agent's report. This file remains the acceptance contract for
-> Milestone 1.
+> Implementation status: implemented on 2026-06-22. The acceptance contract remains in
+> this file; verification details are recorded in the completing agent's report.
 
-## Role
+## Context
 
-You are bootstrapping the ToolWatch codebase from the existing repository.
+The repository bootstrap milestone is complete.
 
-The current repository contains:
+The project already includes:
 
-```text
-.
-├── AGENTS.md
-├── docs
-│   ├── architecture.md
-│   ├── current-task.md
-│   ├── product-spec.md
-│   └── threat-model.md
-├── main.py
-├── Makefile
-├── pyproject.toml
-├── README.md
-├── SECURITY.md
-└── uv.lock
-```
+* Python `src` package layout;
+* FastAPI application factory;
+* PostgreSQL;
+* async SQLAlchemy;
+* Alembic;
+* Dockerfile and Docker Compose;
+* health endpoints;
+* unit and integration tests;
+* Ruff, Pyright, pytest, and CI.
 
-Read the following files before changing anything:
+This milestone introduces the first ToolWatch domain entities and persistence flows.
+
+Read before changing code:
 
 1. `AGENTS.md`
 2. `docs/product-spec.md`
 3. `docs/architecture.md`
 4. `docs/threat-model.md`
-5. `README.md`
-6. `pyproject.toml`
-7. `Makefile`
-8. the existing `main.py`
+5. `docs/testing.md`
+6. the current implementation and tests
 
 Treat `AGENTS.md` and `docs/product-spec.md` as authoritative.
 
@@ -43,553 +36,747 @@ Treat `AGENTS.md` and `docs/product-spec.md` as authoritative.
 
 ## Goal
 
-Create a clean, production-oriented development foundation for ToolWatch.
-
-The result must include:
-
-* a Python `src` package layout;
-* a minimal FastAPI application;
-* application configuration;
-* PostgreSQL;
-* Alembic;
-* Dockerfile;
-* Docker Compose;
-* liveness and readiness endpoints;
-* unit and integration test foundations;
-* linting, formatting, and type checking;
-* GitHub Actions CI;
-* updated Makefile and documentation.
-
-The task is repository bootstrap only.
-
-Do not implement ToolWatch business features yet.
-
----
-
-## Required architecture
-
-Create this initial structure:
-
-```text
-.
-├── AGENTS.md
-├── README.md
-├── SECURITY.md
-├── Makefile
-├── Dockerfile
-├── compose.yaml
-├── .dockerignore
-├── .env.example
-├── .gitignore
-├── pyproject.toml
-├── uv.lock
-├── alembic.ini
-│
-├── alembic/
-│   ├── env.py
-│   ├── script.py.mako
-│   └── versions/
-│
-├── src/
-│   └── toolwatch/
-│       ├── __init__.py
-│       ├── main.py
-│       ├── config.py
-│       │
-│       ├── api/
-│       │   ├── __init__.py
-│       │   ├── router.py
-│       │   └── health.py
-│       │
-│       ├── application/
-│       │   └── __init__.py
-│       │
-│       ├── domain/
-│       │   └── __init__.py
-│       │
-│       ├── security/
-│       │   └── __init__.py
-│       │
-│       ├── infrastructure/
-│       │   ├── __init__.py
-│       │   └── database/
-│       │       ├── __init__.py
-│       │       ├── base.py
-│       │       ├── engine.py
-│       │       └── health.py
-│       │
-│       └── telemetry/
-│           └── __init__.py
-│
-├── tests/
-│   ├── conftest.py
-│   ├── unit/
-│   │   └── test_liveness.py
-│   └── integration/
-│       └── test_database_readiness.py
-│
-├── docs/
-│   ├── architecture.md
-│   ├── current-task.md
-│   ├── product-spec.md
-│   ├── testing.md
-│   ├── threat-model.md
-│   └── adr/
-│       └── 0001-modular-monolith.md
-│
-└── .github/
-    └── workflows/
-        └── ci.yml
-```
-
-Small adjustments are allowed only when justified by the existing repository or tooling.
-
-Do not create placeholder modules beyond the listed architecture.
-
----
-
-## Application requirements
-
-### Application factory
-
-Move the application from root `main.py` into:
-
-```text
-src/toolwatch/main.py
-```
-
 Implement:
 
-```python
-def create_app() -> FastAPI:
-    ...
-```
+1. Tool Registry;
+2. Agent registration or resolution;
+3. Agent Session creation;
+4. read APIs for tools and sessions;
+5. PostgreSQL persistence;
+6. Alembic migration;
+7. unit and integration tests.
 
-Also expose:
+This milestone must create the trusted registry that later tool-call execution will depend on.
 
-```python
-app = create_app()
-```
-
-Configure:
-
-* title: `ToolWatch`;
-* version from package metadata or a single project constant;
-* API router;
-* no database connection during module import;
-* no global mutable service objects.
-
-Remove root `main.py` after its functionality has been migrated.
-
-### Health endpoints
-
-Implement:
-
-```http
-GET /health/live
-GET /health/ready
-```
-
-#### Liveness
-
-`GET /health/live` must:
-
-* return HTTP 200 while the process is running;
-* avoid checking PostgreSQL or external services;
-* return:
-
-```json
-{
-  "status": "ok",
-  "service": "toolwatch"
-}
-```
-
-#### Readiness
-
-`GET /health/ready` must:
-
-* execute a lightweight PostgreSQL query such as `SELECT 1`;
-* return HTTP 200 when PostgreSQL is available;
-* return HTTP 503 with a sanitized response when unavailable;
-* never expose the database URL or raw exception.
-
-Example success:
-
-```json
-{
-  "status": "ready",
-  "database": "available"
-}
-```
-
-Example failure:
-
-```json
-{
-  "status": "not_ready",
-  "database": "unavailable"
-}
-```
+Do not implement tool execution yet.
 
 ---
 
-## Configuration
+## Required domain concepts
 
-Use `pydantic-settings`.
+Create framework-independent domain models for:
 
-Create a typed settings object supporting:
+* `Agent`;
+* `ToolDefinition`;
+* `AgentSession`.
+
+Do not use SQLAlchemy models as domain entities.
+
+Use explicit enums and value objects where useful, but avoid unnecessary abstraction.
+
+---
+
+## Domain model
+
+### Agent
+
+Fields:
 
 ```text
-APP_NAME
-APP_VERSION
-ENVIRONMENT
-LOG_LEVEL
-DATABASE_URL
-DATABASE_POOL_SIZE
-DATABASE_MAX_OVERFLOW
-DATABASE_CONNECT_TIMEOUT_SECONDS
+id
+name
+provider
+model_name
+version
+metadata
+created_at
 ```
 
 Requirements:
 
-* load values from environment variables;
-* support local `.env`;
-* do not commit `.env`;
-* provide safe defaults only for non-sensitive development settings;
-* keep `.env.example` free of real credentials;
-* cache settings using a controlled dependency function;
-* do not access environment variables throughout arbitrary modules.
+* `name` must be non-empty;
+* `provider` must be non-empty;
+* `model_name` must be non-empty;
+* `version` is optional;
+* metadata must be JSON-compatible;
+* timestamps must be timezone-aware UTC.
 
-Suggested local URL:
+The same logical agent may be reused across multiple sessions.
 
-```text
-postgresql+asyncpg://toolwatch:toolwatch@localhost:5432/toolwatch
-```
-
-Suggested container URL:
+Suggested identity key:
 
 ```text
-postgresql+asyncpg://toolwatch:toolwatch@postgres:5432/toolwatch
+name + provider + model_name + version
 ```
 
----
+Do not expose raw database implementation details in the domain layer.
 
-## Database
+### ToolDefinition
 
-Use:
+Fields:
 
-* PostgreSQL;
-* SQLAlchemy 2 async engine;
-* asyncpg;
-* Alembic.
-
-Implement:
-
-* declarative base;
-* async engine factory;
-* async session factory;
-* database readiness check;
-* proper engine disposal;
-* no application-domain models yet.
-
-Create an initial empty or metadata bootstrap migration only if Alembic requires it. Do not invent ToolWatch entities during this task.
-
-Integration tests must use real PostgreSQL, preferably through Testcontainers.
-
-Do not use SQLite.
-
----
-
-## Dockerfile
-
-Create a secure multi-stage or otherwise minimal Dockerfile.
+```text
+id
+name
+description
+version
+input_schema
+output_schema
+base_risk_level
+enabled
+adapter_type
+adapter_config
+created_at
+updated_at
+```
 
 Requirements:
 
-* use an official slim Python image compatible with Python 3.13;
-* install dependencies from `uv.lock`;
-* use `uv sync --frozen`;
-* copy dependency metadata before application code for build caching;
-* run as a non-root user;
-* do not bake `.env` or secrets into the image;
-* set sensible Python environment variables;
-* expose the API port;
-* start Uvicorn without `--reload`;
-* include a container healthcheck or rely on the Compose healthcheck;
-* keep the final image free of unnecessary build tools where practical.
+* `(name, version)` must be unique;
+* name must use a stable namespace-like format;
+* version must be explicit;
+* input schema is required;
+* output schema is optional;
+* base risk level must be one of:
 
-Expected application command:
+  * low
+  * medium
+  * high
+  * critical
+* enabled defaults to `true`;
+* adapter type must be explicit;
+* adapter configuration must be JSON-compatible;
+* agents must not register tools through the future execution endpoint.
+
+Recommended tool-name validation:
 
 ```text
-uvicorn toolwatch.main:app --host 0.0.0.0 --port 8000
+lowercase letters
+digits
+underscores
+dots
+hyphens
 ```
 
-Do not install Ollama in the API image.
+Example:
+
+```text
+github.list_issues
+email.send
+database.query
+```
+
+Reject whitespace and ambiguous names.
+
+### AgentSession
+
+Fields:
+
+```text
+id
+agent_id
+external_session_id
+user_prompt_redacted
+status
+started_at
+finished_at
+metadata
+```
+
+Session status:
+
+```text
+active
+completed
+failed
+```
+
+Requirements:
+
+* every session references an existing agent;
+* `started_at` is required;
+* `finished_at` is null while active;
+* completing or failing a session sets `finished_at`;
+* invalid status transitions must be rejected;
+* prompt persistence must use a redaction boundary even though the full security redaction engine is not implemented yet.
+
+For this milestone, implement a minimal prompt sanitizer that protects obvious secret fields or values, or persist no prompt content by default.
+
+Prefer safe omission over unsafe storage.
 
 ---
 
-## Docker Compose
+## Architecture
 
-Create `compose.yaml` with:
+Preserve the modular-monolith dependency direction:
 
-### `api`
+```text
+API → Application → Domain
+          ↓
+    Infrastructure implements ports
+```
 
-* built from the local Dockerfile;
-* depends on healthy PostgreSQL;
-* reads development settings from environment;
-* publishes port `8000`;
-* has a healthcheck against `/health/live`;
-* connects to the application network.
+Expected packages may include:
 
-### `postgres`
+```text
+src/toolwatch/domain/agents/
+src/toolwatch/domain/tools/
+src/toolwatch/domain/sessions/
 
-* use a current official PostgreSQL image;
-* configure a development-only database, user, and password;
-* store data in a named volume;
-* publish port `5432` for local development;
-* include a `pg_isready` healthcheck.
+src/toolwatch/application/agents/
+src/toolwatch/application/tools/
+src/toolwatch/application/sessions/
 
-### `jaeger`
+src/toolwatch/infrastructure/database/models/
+src/toolwatch/infrastructure/repositories/
 
-* use the all-in-one Jaeger image;
-* expose the UI and OTLP endpoints needed later;
-* do not require application telemetry implementation in this task.
+src/toolwatch/api/agents.py
+src/toolwatch/api/tools.py
+src/toolwatch/api/sessions.py
+```
 
-### Profiles
+Small deviations are allowed when consistent with the existing architecture.
 
-Jaeger may use an `observability` profile if that makes the default stack lighter.
+Do not import FastAPI or SQLAlchemy into the domain layer.
+
+---
+
+## Repository ports
+
+Define repository protocols in the domain or application boundary.
+
+### Agent repository
+
+Required operations:
+
+```text
+get_by_id
+find_by_identity
+create
+```
+
+### Tool repository
+
+Required operations:
+
+```text
+get_by_id
+get_by_name_and_version
+list
+create
+set_enabled
+```
+
+### Session repository
+
+Required operations:
+
+```text
+get_by_id
+list
+create
+update_status
+```
+
+Do not create a generic base repository abstraction unless it clearly reduces real duplication.
+
+---
+
+## Database schema
+
+Create SQLAlchemy persistence models for:
+
+```text
+agents
+tool_definitions
+agent_sessions
+```
+
+### Database requirements
+
+* use PostgreSQL UUID columns where appropriate;
+* use timezone-aware timestamps;
+* use JSONB for metadata and schemas;
+* use explicit foreign keys;
+* use explicit indexes;
+* add a database unique constraint for tool `(name, version)`;
+* add an identity lookup index for agents;
+* index session `agent_id`, `status`, and `started_at`;
+* use explicit constraint names;
+* avoid cascade deletion that could remove audit-relevant history later.
 
 Do not add:
 
-* Ollama container;
-* Redis;
-* Kafka;
-* Prometheus;
-* Grafana;
-* mock tools.
+* tool calls;
+* tool results;
+* risk flags;
+* audit events;
+* users;
+* tenants.
 
-Ollama will run directly on macOS in future milestones.
+Create a new Alembic migration after `0001_bootstrap`.
+
+Review the generated migration manually.
+
+The migration must upgrade and downgrade cleanly on an empty PostgreSQL database.
 
 ---
 
-## Makefile
+## API
 
-Provide at least these commands:
+Use the `/api/v1` prefix.
+
+### Register a tool
+
+```http
+POST /api/v1/tools
+```
+
+Request:
+
+```json
+{
+  "name": "github.list_issues",
+  "description": "List GitHub issues for a repository",
+  "version": "1.0.0",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "repository": {
+        "type": "string"
+      }
+    },
+    "required": ["repository"],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "array",
+    "items": {
+      "type": "object"
+    }
+  },
+  "base_risk_level": "low",
+  "enabled": true,
+  "adapter_type": "mock",
+  "adapter_config": {
+    "fixture": "github_issues"
+  }
+}
+```
+
+Success:
 
 ```text
-install
-infra-up
-infra-down
-run
-migrate
-test
-test-unit
-test-integration
-lint
-format
-typecheck
-check
-docker-build
-docker-up
-docker-down
+201 Created
+```
+
+Duplicate `(name, version)`:
+
+```text
+409 Conflict
+```
+
+Stable error code:
+
+```text
+tool_version_already_exists
+```
+
+Invalid schemas or invalid names:
+
+```text
+422 Unprocessable Entity
+```
+
+Do not rely only on a pre-insert query for uniqueness. Handle the database unique constraint safely.
+
+### List tools
+
+```http
+GET /api/v1/tools
+```
+
+Support query parameters:
+
+```text
+enabled
+risk_level
+name
+limit
+offset
+```
+
+Requirements:
+
+* deterministic ordering;
+* bounded limit;
+* no arbitrary sorting field in this milestone;
+* return pagination metadata.
+
+Suggested response:
+
+```json
+{
+  "items": [],
+  "limit": 50,
+  "offset": 0,
+  "total": 0
+}
+```
+
+### Get a tool
+
+```http
+GET /api/v1/tools/{tool_id}
+```
+
+Missing tool:
+
+```text
+404 tool_not_found
+```
+
+### Enable or disable a tool
+
+```http
+PATCH /api/v1/tools/{tool_id}
+```
+
+Request:
+
+```json
+{
+  "enabled": false
+}
+```
+
+Do not support arbitrary partial updates yet.
+
+### Create a session
+
+```http
+POST /api/v1/sessions
+```
+
+Request:
+
+```json
+{
+  "agent": {
+    "name": "local-demo-agent",
+    "provider": "ollama",
+    "model_name": "qwen3:4b",
+    "version": "1"
+  },
+  "external_session_id": "optional-client-session-id",
+  "user_prompt": "Check open issues in demo/backend",
+  "metadata": {
+    "source": "demo"
+  }
+}
 ```
 
 Behavior:
 
-* `infra-up` starts PostgreSQL and optional local infrastructure;
-* `run` starts local FastAPI with reload;
-* `migrate` applies Alembic migrations;
-* `test` excludes `local_llm`;
-* `check` runs lint, formatting check, type checking, and tests;
-* commands must fail when an underlying command fails.
+* find an existing agent by its identity fields;
+* create the agent if it does not exist;
+* create an active session;
+* do not store the raw prompt if it contains an obvious secret;
+* return the session and agent identity.
 
-Keep commands short and predictable.
-
----
-
-## Python tooling
-
-Configure `pyproject.toml` for:
-
-* Python 3.13;
-* FastAPI;
-* Uvicorn;
-* Pydantic Settings;
-* SQLAlchemy 2;
-* asyncpg;
-* Alembic;
-* HTTPX;
-* pytest;
-* pytest-asyncio;
-* Testcontainers PostgreSQL;
-* Ruff;
-* Pyright.
-
-Configure Ruff for:
-
-* linting;
-* import sorting;
-* formatting;
-* a practical line length.
-
-Configure pytest markers:
+Success:
 
 ```text
-integration
-local_llm
+201 Created
 ```
 
-Configure asyncio behavior explicitly.
+### List sessions
 
-Do not add Ollama dependencies in this bootstrap task unless required only as an optional dependency group.
+```http
+GET /api/v1/sessions
+```
+
+Support filters:
+
+```text
+agent_id
+status
+limit
+offset
+```
+
+Order newest first.
+
+### Get a session
+
+```http
+GET /api/v1/sessions/{session_id}
+```
+
+Missing session:
+
+```text
+404 session_not_found
+```
+
+### Complete a session
+
+```http
+POST /api/v1/sessions/{session_id}/complete
+```
+
+Request:
+
+```json
+{
+  "status": "completed"
+}
+```
+
+Allowed terminal values:
+
+```text
+completed
+failed
+```
+
+Reject invalid transitions with:
+
+```text
+409 invalid_session_transition
+```
+
+Repeated completion with the same terminal state may be idempotent.
+
+A transition from one terminal state to another must be rejected.
 
 ---
 
-## Tests
+## Pydantic and JSON Schema handling
 
-### Unit test
+Use Pydantic request and response models at the API boundary.
 
-Test `/health/live` using the FastAPI application and an HTTPX ASGI transport or equivalent.
+Tool `input_schema` and `output_schema` are JSON Schema documents.
 
-It must not require:
+For this milestone:
 
-* Docker;
-* PostgreSQL;
-* Ollama;
-* network access.
+* verify the value is a JSON object;
+* require input schema top-level type to be `object`;
+* validate that the schema itself is structurally acceptable using a maintained JSON Schema validation library or a deliberately limited validator;
+* do not execute validation against tool arguments yet;
+* reject malformed schemas at registration time;
+* do not mutate user-provided schemas.
 
-### Integration test
-
-Test `/health/ready` against PostgreSQL started through Testcontainers.
-
-Cover:
-
-* ready database returns HTTP 200;
-* unavailable database returns HTTP 503;
-* failure response is sanitized.
-
-Integration tests may be marked `integration`.
-
-Do not mock PostgreSQL in the integration test.
+If adding a JSON Schema dependency, document why it is needed.
 
 ---
 
-## CI
+## Prompt safety boundary
 
-Create `.github/workflows/ci.yml`.
+The full redaction engine belongs to a later milestone.
 
-Run on:
+For this task, implement one safe approach:
 
-* pushes to the default branch;
-* pull requests.
+### Preferred approach
 
-Required jobs or steps:
+Store `user_prompt_redacted = null` by default, controlled by:
 
-```bash
-uv sync --frozen
-uv run ruff check .
-uv run ruff format --check .
-uv run pyright
-uv run pytest -m "not local_llm"
+```text
+STORE_PROMPTS=false
 ```
+
+When disabled:
+
+* do not persist the prompt;
+* do not log it;
+* do not include it in traces.
+
+If prompt storage is enabled in development:
+
+* apply a minimal deterministic sanitizer;
+* redact obvious bearer tokens, JWT-like values, and common secret prefixes;
+* clearly document that this is temporary and not the final redaction engine.
+
+Default must be safe.
+
+---
+
+## Transactions and consistency
+
+Application use cases must own transaction boundaries.
 
 Requirements:
 
-* use Python 3.13;
-* cache uv dependencies when practical;
-* do not install or run Ollama;
-* do not require cloud credentials;
-* support Testcontainers or provide a PostgreSQL service for integration tests;
-* fail on lint, type, migration, or test failures.
+* agent lookup/create and session creation must be transactionally safe;
+* concurrent identical agent-session requests must not create duplicate logical agents;
+* tool uniqueness must be enforced by PostgreSQL;
+* do not commit inside repository methods unless the existing architecture explicitly requires it;
+* map expected integrity violations to stable application errors;
+* do not expose raw database exceptions.
 
-Also verify that Alembic can upgrade an empty database.
+Add at least one concurrency-oriented test for duplicate tool registration or agent identity creation.
 
 ---
 
-## Documentation
+## Required tests
 
-Update `README.md` with:
+### Domain unit tests
 
-* one-paragraph product explanation;
-* architecture summary;
-* prerequisites;
-* local development commands;
-* Docker Compose commands;
-* test commands;
-* links to the product specification and threat model;
-* explicit statement that the project is experimental and not production-ready.
+Cover:
 
-Create or update:
+* valid tool definition;
+* invalid tool name;
+* invalid risk level;
+* session creation;
+* valid terminal transition;
+* invalid terminal transition;
+* already-terminal transition behavior.
+
+### Application unit tests
+
+Use repository fakes or stubs.
+
+Cover:
+
+* register tool;
+* duplicate tool mapping;
+* create or reuse agent;
+* create session;
+* complete session;
+* invalid transition.
+
+### API tests
+
+Cover:
+
+* tool registration;
+* duplicate tool conflict;
+* tool listing and filters;
+* tool detail;
+* enable/disable;
+* session creation;
+* session listing;
+* session detail;
+* completion;
+* sanitized public errors.
+
+### PostgreSQL integration tests
+
+Use Testcontainers.
+
+Cover:
+
+* migration upgrade;
+* migration downgrade and upgrade;
+* unique tool `(name, version)`;
+* agent identity behavior;
+* foreign key from session to agent;
+* JSONB persistence;
+* timestamps;
+* pagination;
+* concurrent duplicate registration.
+
+Do not use SQLite.
+
+### Security-related tests
+
+At minimum:
+
+* prompt storage disabled by default;
+* raw prompt absent from database;
+* raw prompt absent from logs;
+* malformed JSON Schema rejected;
+* SQLAlchemy exception text not returned through API;
+* adapter configuration does not permit arbitrary secret material in test fixtures.
+
+---
+
+## Seed data
+
+Do not automatically insert production data during migrations.
+
+You may add a development-only seed command for these tools:
+
+```text
+github.list_issues
+email.send
+database.query
+```
+
+If implemented:
+
+* it must be explicit;
+* it must be idempotent;
+* it must use application services;
+* it must not run automatically during API startup;
+* it must not implement the adapters themselves.
+
+This is optional for the milestone.
+
+---
+
+## OpenAPI
+
+Ensure generated OpenAPI includes:
+
+* request examples;
+* response models;
+* stable error responses;
+* filters;
+* pagination schema;
+* enum values.
+
+Do not expose internal persistence fields or adapter secrets.
+
+---
+
+## Documentation updates
+
+Update:
+
+### `README.md`
+
+Add:
+
+* Tool Registry API overview;
+* Agent Session API overview;
+* example curl commands;
+* migration command;
+* note that execution is not implemented yet.
 
 ### `docs/architecture.md`
 
 Document:
 
-* modular-monolith decision;
-* dependency direction;
-* development topology;
-* container topology;
-* why Ollama remains outside Docker during development.
+* domain entities;
+* repository ports;
+* persistence adapters;
+* transaction boundaries.
+
+### `docs/threat-model.md`
+
+Add or refine threats:
+
+* malicious tool registration;
+* schema abuse;
+* registry poisoning;
+* secret leakage through adapter configuration;
+* prompt persistence;
+* duplicate or conflicting agent identity.
 
 ### `docs/testing.md`
 
 Document:
 
-* unit versus integration tests;
-* Testcontainers requirements;
-* `local_llm` marker;
-* required verification commands.
+* new unit and integration test groups;
+* concurrency test behavior;
+* PostgreSQL requirement.
 
-### `docs/adr/0001-modular-monolith.md`
-
-Record:
-
-* context;
-* decision;
-* consequences;
-* rejected early microservices approach.
-
-Do not rewrite `docs/product-spec.md` unless correcting a direct inconsistency discovered during implementation.
+Add an ADR only if a durable design choice is made that is not already covered.
 
 ---
 
-## Files to create
+## Makefile
 
-At minimum:
-
-```text
-Dockerfile
-compose.yaml
-.dockerignore
-.env.example
-.gitignore
-alembic.ini
-alembic/*
-src/toolwatch/*
-tests/*
-docs/testing.md
-docs/adr/0001-modular-monolith.md
-.github/workflows/ci.yml
-```
-
-Update:
+Add or update commands if needed:
 
 ```text
-pyproject.toml
-uv.lock
-Makefile
-README.md
-docs/architecture.md
+seed
+test-domain
+test-api
 ```
 
-Move or remove:
-
-```text
-main.py
-```
-
-after migrating its behavior.
+Do not make the default development startup automatically seed data.
 
 ---
 
@@ -597,87 +784,88 @@ after migrating its behavior.
 
 Do not implement:
 
-* Agent entities;
-* ToolDefinition;
-* sessions;
-* tool-call endpoints;
-* tool adapters;
-* mock GitHub, email, or database tools;
-* secret redaction;
-* risk classification;
+* `POST /tool-calls`;
+* tool execution;
+* adapter invocation;
+* mock GitHub/email/database services;
+* idempotency keys for tool calls;
+* full redaction engine;
+* risk calculation beyond storing base risk;
 * blocking rules;
 * audit events;
-* OpenTelemetry instrumentation;
+* OpenTelemetry tool spans;
 * dashboard;
-* CLI;
-* Ollama integration;
-* MCP support.
-
-Creating empty package boundaries is allowed. Implementing their behavior is not.
+* Ollama provider;
+* MCP;
+* authentication;
+* users or tenants.
 
 ---
 
 ## Acceptance criteria
 
-The task is complete only when all conditions hold:
+The task is complete only when:
 
-1. `uv sync --frozen` succeeds.
-2. The package imports from `src/toolwatch`.
-3. Root `main.py` is no longer the application entry point.
-4. `make run` starts FastAPI locally.
-5. `GET /health/live` returns HTTP 200 without PostgreSQL.
-6. `GET /health/ready` returns HTTP 200 with PostgreSQL available.
-7. `GET /health/ready` returns sanitized HTTP 503 when PostgreSQL is unavailable.
-8. Alembic upgrades an empty PostgreSQL database.
-9. Unit tests run without Docker or PostgreSQL.
-10. Integration tests use real PostgreSQL.
-11. `make lint` passes.
-12. `make typecheck` passes.
-13. `make test` passes.
-14. `make check` passes.
-15. `docker compose up --build` starts a healthy API and PostgreSQL.
-16. The API container runs as a non-root user.
-17. No real secrets are committed.
-18. README instructions work from a clean checkout.
-19. CI is green.
-20. No product business functionality outside this task was added.
+1. Agent, ToolDefinition, and AgentSession domain models exist.
+2. Domain code has no FastAPI or SQLAlchemy imports.
+3. PostgreSQL tables are created by a reviewed Alembic migration.
+4. Migration upgrades and downgrades successfully.
+5. `(tool name, version)` is enforced by a named DB constraint.
+6. Duplicate tool registration returns HTTP 409 with a stable error code.
+7. Tool list supports bounded pagination and documented filters.
+8. Tool enable/disable works.
+9. Creating a session creates or reuses the matching agent safely.
+10. Session terminal transitions are enforced.
+11. Prompt storage is disabled by default.
+12. Raw prompts do not appear in persistence or logs by default.
+13. Unit, API, integration, and concurrency tests pass.
+14. PostgreSQL is used for integration tests.
+15. OpenAPI accurately describes the endpoints.
+16. Documentation and threat model are updated.
+17. `make check` passes.
+18. Docker Compose remains healthy.
+19. Existing health behavior remains unchanged.
+20. No tool execution or LLM integration was added.
 
 ---
 
 ## Required implementation process
 
-Before writing code:
+Before coding:
 
-1. inspect every existing repository file;
-2. summarize the current state;
-3. identify inconsistencies between existing files;
-4. present a concise implementation plan;
-5. do not ask for confirmation unless blocked by missing information.
+1. inspect the current repository and latest migration;
+2. read all project instructions;
+3. summarize the proposed entities, tables, ports, and transaction boundaries;
+4. identify any conflicts with the current architecture;
+5. proceed without waiting unless genuinely blocked.
 
 During implementation:
 
-1. make incremental changes;
-2. preserve the existing product specification;
-3. avoid unrelated refactors;
-4. run focused checks after each coherent stage;
-5. fix issues instead of bypassing checks.
+1. work in small coherent stages;
+2. create the migration after persistence models are defined;
+3. manually inspect the migration;
+4. add focused tests before expanding APIs;
+5. keep the domain independent;
+6. do not implement future milestones.
 
 Before completion:
 
-1. run all acceptance checks available in the environment;
-2. inspect the final repository tree;
-3. inspect Git diff;
-4. verify no secrets or generated local files were added;
-5. update documentation;
-6. report:
+1. run focused unit tests;
+2. run PostgreSQL integration tests;
+3. test migration upgrade and downgrade;
+4. run `make check`;
+5. run the Docker Compose smoke test;
+6. inspect the final Git diff;
+7. verify no raw prompts or credentials were added;
+8. report:
 
-   * files created;
-   * files modified;
-   * files removed;
-   * architectural decisions;
+   * created and modified files;
+   * migration details;
+   * API endpoints;
+   * transaction decisions;
    * commands executed;
    * test results;
-   * checks that could not be run;
+   * unverified assumptions;
    * remaining risks.
 
-Do not claim a check passed unless it was actually executed successfully.
+Do not claim success for checks that were not actually executed.

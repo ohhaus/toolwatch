@@ -1,24 +1,13 @@
 """Integration tests for PostgreSQL readiness."""
 
-from collections.abc import Iterator
-
 import httpx
 import pytest
-from testcontainers.postgres import PostgresContainer  # pyright: ignore[reportMissingTypeStubs]
 
 from toolwatch.config import get_settings
 from toolwatch.infrastructure.database.engine import get_engine
 from toolwatch.main import create_app
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture(scope="module")
-def postgres_url() -> Iterator[str]:
-    """Start a disposable PostgreSQL instance and expose an async URL."""
-
-    with PostgresContainer("postgres:17-alpine", driver="asyncpg") as postgres:
-        yield postgres.get_connection_url()
 
 
 def configure_database(monkeypatch: pytest.MonkeyPatch, database_url: str) -> None:

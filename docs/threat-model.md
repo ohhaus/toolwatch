@@ -14,17 +14,24 @@ blocked or invalid calls must never reach downstream adapters.
 | Oversized or deeply nested payload | Multi-megabyte result or recursive JSON | Enforce size, depth, timeout, and truncation limits |
 | Prompt injection in output | Tool result asks the agent to bypass controls | Treat output as data and route subsequent calls through the same controls |
 | Readiness information disclosure | PostgreSQL connection failure contains credentials or hostnames | Collapse failures to `database: unavailable`; never return raw exceptions |
+| Registry poisoning | A caller registers an ambiguous or conflicting tool identity | Validate namespace-like names and schemas; enforce `(name, version)` with a named PostgreSQL unique constraint |
+| Schema abuse | Deep, oversized, or malformed JSON Schema consumes resources | Bound JSON size/depth and validate the stored structural subset at registration |
+| Adapter secret leakage | Raw credentials are placed in adapter configuration | Reject secret-like keys and omit adapter configuration from public responses |
+| Prompt persistence | A session prompt contains a bearer token or other secret | Store no prompt by default; explicit development storage uses a temporary minimal sanitizer |
+| Conflicting agent identity | Concurrent requests create duplicate logical agents | Normalize optional version, enforce a unique identity, and use a PostgreSQL upsert |
+| Infrastructure error disclosure | SQLAlchemy errors contain SQL, hosts, or credentials | Return a fixed `internal_error` with a correlation ID |
 
-## Bootstrap attack surface
+## Current attack surface
 
-Milestone 1 exposes only health endpoints. Liveness has no downstream dependency.
-Readiness executes a constant `SELECT 1` through the configured PostgreSQL engine and
-returns a fixed 503 body on every failure. It does not log or render the exception.
+Milestone 2 exposes health, tool-registry, and agent-session endpoints. Liveness has no
+downstream dependency. Readiness executes a constant `SELECT 1` and returns a fixed 503
+body on failure. Business endpoints persist only validated domain data and use sanitized
+public errors.
 
 Development credentials in `.env.example` and Compose are local-only placeholders.
 Real secrets must be supplied outside version control. The API image does not copy `.env`
 and runs as a non-root user.
 
-Business endpoints, tool adapters, LLM integration, redaction, and policy enforcement are
-not present yet; their detailed requirements remain in
-[the product specification](product-spec.md).
+Tool execution, adapters, LLM integration, full recursive redaction, risk evaluation,
+policy enforcement, audit events, and dashboard rendering are not present yet. The
+registry must not be interpreted as an execution capability.

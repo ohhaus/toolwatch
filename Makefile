@@ -1,4 +1,5 @@
 .PHONY: install infra-up infra-down run migrate test test-unit test-integration
+.PHONY: test-domain test-api
 .PHONY: lint format typecheck check docker-build docker-up docker-down
 
 install:
@@ -24,6 +25,12 @@ test-unit:
 
 test-integration:
 	uv run pytest tests/integration -m "not local_llm"
+
+test-domain:
+	uv run pytest tests/unit/domain tests/unit/application -m "not local_llm"
+
+test-api:
+	uv run pytest tests/unit/api tests/integration/test_registry_and_sessions_api.py -m "not local_llm"
 
 lint:
 	uv run ruff check .

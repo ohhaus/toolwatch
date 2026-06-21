@@ -15,12 +15,34 @@ Infrastructure implements ports owned by inner layers
 ```
 
 The domain must not import FastAPI, SQLAlchemy, HTTP clients, LLM SDKs, or telemetry
-SDKs. Security decisions remain deterministic and independent of an LLM. The bootstrap
-contains empty package boundaries for future milestones but no premature abstractions or
-business entities.
+SDKs. Security decisions remain deterministic and independent of an LLM.
 
 The durable rationale is recorded in
 [ADR 0001](adr/0001-modular-monolith.md).
+
+## Milestone 2 domain and persistence
+
+The first domain entities are:
+
+- `Agent`, identified logically by name, provider, model name, and optional version;
+- `ToolDefinition`, a trusted versioned registry entry with JSON schemas, base risk,
+  enabled state, and an explicit adapter type;
+- `AgentSession`, with active, completed, and failed lifecycle states.
+
+Repository protocols and the unit-of-work protocol live at the application boundary.
+PostgreSQL adapters implement them with separate `agents`, `tool_definitions`, and
+`agent_sessions` SQLAlchemy models. Domain entities never double as persistence models.
+
+Each application use case opens one unit of work and owns its commit. Repository methods
+flush when a database constraint must be observed but never commit. Tool uniqueness is a
+named PostgreSQL constraint. Agent resolution and session creation share one transaction;
+agent creation uses `ON CONFLICT DO NOTHING` followed by identity lookup so concurrent
+requests reuse one logical agent. Session completion locks its row before applying the
+domain transition.
+
+The API returns domain-shaped response models and omits adapter configuration. Prompt
+storage is disabled by default; the persistence column receives `NULL` unless a
+developer explicitly enables temporary, deterministically sanitized storage.
 
 ## Runtime construction
 
