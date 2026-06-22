@@ -22,10 +22,6 @@ Runtime security, audit and observability proxy for AI-agent tool calls.
 
 ---
 
-<!-- Demo placeholder: replace with docs/assets/toolwatch-demo.gif once recorded.
-     Suggested scenario: Ollama agent requests database.query → destructive SQL detected
-     → CRITICAL → BLOCKED → adapter not executed → dashboard timeline → Jaeger trace. -->
-
 ToolWatch sits between an AI agent and the tools it invokes.
 
 Every tool call passes through a deterministic pipeline that validates
