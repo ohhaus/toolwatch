@@ -1,36 +1,61 @@
+<div align="center">
+
 # ToolWatch
 
-ToolWatch is an observability and runtime-safety proxy between AI agents and their tool
-adapters. It validates untrusted arguments, redacts secrets, makes deterministic
-allow/flag/block decisions, prevents blocked downstream execution, and records sanitized
-audit and telemetry evidence.
+### Observe and control every action your AI agent takes.
+
+Runtime security, audit and observability proxy for AI-agent tool calls.
+
+[![CI](https://github.com/ohhaus/toolwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/ohhaus/toolwatch/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ohhaus/toolwatch)](https://github.com/ohhaus/toolwatch/releases)
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/ohhaus/toolwatch)](LICENSE)
+[![Security](https://img.shields.io/badge/security-policy-3FB950)](SECURITY.md)
+
+[Quick Start](#quick-start) ·
+[Architecture](docs/architecture.md) ·
+[Threat Model](docs/threat-model.md) ·
+[Attack Lab](#attack-lab) ·
+[Release Notes](docs/releases/0.1.0.md)
+
+</div>
+
+---
+
+<!-- Demo placeholder: replace with docs/assets/toolwatch-demo.gif once recorded.
+     Suggested scenario: Ollama agent requests database.query → destructive SQL detected
+     → CRITICAL → BLOCKED → adapter not executed → dashboard timeline → Jaeger trace. -->
+
+ToolWatch sits between an AI agent and the tools it invokes.
+
+Every tool call passes through a deterministic pipeline that validates
+arguments, redacts secrets, classifies risk, applies blocking rules,
+records an audit trail and exports OpenTelemetry traces.
 
 ```text
-Agent → ToolWatch registry → validation → redaction → risk/rules → trusted mock adapter
-                                         └─ block → audit only; adapter never called
+AI Agent
+   │
+   ▼
+ToolWatch
+   ├── Validate
+   ├── Redact
+   ├── Classify
+   ├── Allow / Flag / Block
+   ├── Audit
+   └── Trace
+   │
+   ▼
+Trusted Tool Adapter
 ```
 
-Example:
-
-```text
-Agent requests destructive SQL
-→ ToolWatch classifies CRITICAL
-→ matching rule blocks execution
-→ audit event and trace created
-```
-
-ToolWatch v0.1.0 includes three in-process mock adapters only. It does not connect to real
-GitHub, email, database, or other external services.
+ToolWatch v0.1.0 is an experimental developer tool and portfolio project. It is not
+intended for public production deployment. The release ships three in-process mock
+adapters only — no real GitHub, email, or database integration.
 
 Observability v1 adds OpenTelemetry request and execution traces, safe structured-log
 correlation, append-only audit correlation, and Prometheus-compatible metrics. Telemetry
 contains metadata only: prompts, arguments, results, rule evidence, adapter configuration,
 authorization data, exception messages, and stack traces are excluded.
-
-ToolWatch is experimental and is not production-ready.
-
-> Screenshot/GIF placeholder: record the dashboard and destructive-SQL Attack Lab
-> scenario before publishing the public portfolio release.
 
 ## Quick start
 
