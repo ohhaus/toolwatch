@@ -24,7 +24,7 @@ def _run(command: list[str], *, cwd: Path = ROOT) -> None:
 
 def main() -> int:
     shutil.rmtree(DIST, ignore_errors=True)
-    _run(["uv", "build", "--offline"])
+    _run(["uv", "build"])
     wheel = next(DIST.glob("toolwatch-0.1.0-*.whl"))
     sdist = next(DIST.glob("toolwatch-0.1.0.tar.gz"))
 
