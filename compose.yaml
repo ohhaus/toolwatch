@@ -29,6 +29,13 @@ services:
       OTEL_SEMCONV_STABILITY_OPT_IN: gen_ai_latest_experimental
       METRICS_ENABLED: "true"
       METRICS_PATH: /metrics
+      DASHBOARD_ENABLED: "true"
+      DASHBOARD_PREFIX: /ui
+      DASHBOARD_PAGE_SIZE: 25
+      DASHBOARD_MAX_PAGE_SIZE: 100
+      DASHBOARD_REFRESH_SECONDS: 10
+      ATTACK_LAB_ENABLED: "true"
+      JAEGER_UI_PUBLIC_URL: http://localhost:16686
     command:
       - /bin/sh
       - -c

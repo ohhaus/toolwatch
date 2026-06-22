@@ -14,6 +14,7 @@ from toolwatch.infrastructure.database.engine import dispose_engine
 from toolwatch.telemetry import TelemetryRuntime, build_telemetry_runtime
 from toolwatch.telemetry.logging import configure_logging
 from toolwatch.telemetry.middleware import ObservabilityMiddleware
+from toolwatch.web.router import mount_dashboard
 
 
 @asynccontextmanager
@@ -43,6 +44,7 @@ def create_app(telemetry: TelemetryRuntime | None = None) -> FastAPI:
     application.state.telemetry = runtime
     register_error_handlers(application)
     application.include_router(api_router)
+    mount_dashboard(application)
     application.add_middleware(ObservabilityMiddleware, runtime=runtime)
     _document_correlation_header(application)
     return application

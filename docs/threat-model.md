@@ -39,6 +39,17 @@ blocked or invalid calls must never reach downstream adapters.
 | Telemetry backend outage | Jaeger is unavailable during execution | Fail telemetry open, keep audit authoritative, expose safe degraded status, never fail readiness solely for Jaeger |
 | Payload exhaustion | Deep or oversized JSON consumes memory or storage | Canonical byte, depth, and string limits before execution and before return |
 | Crash after side effect | Process exits before terminal state commits | Idempotency reduces replay risk; fail closed on unresolved keys; document lack of distributed transaction |
+| Stored XSS in dashboard | Tool output, audit evidence, or rule condition contains a `<script>` payload | Jinja autoescape stays on for every template; tool output is never rendered as HTML; sanitized JSON appears inside `<pre>` blocks; `|safe` is never used on tool- or audit-controlled content |
+| Reflected XSS in dashboard | A query-string filter is echoed into HTML | Filter values are bound through Pydantic-like type narrowing in the router (trace_id, UUID, enum) and reflected only through autoescape |
+| Malicious tool output in HTML | A tool returns HTML, attributes, or instructions | Result payload renders only as escaped JSON text; never used in `innerHTML` paths client-side |
+| CSRF on Attack Lab | A malicious site posts to `/ui/attacks/{id}/run` from a developer browser | CSP `form-action 'self'`, Origin/Referer check, no JSON body accepted; the endpoint is disabled when `ATTACK_LAB_ENABLED=false` |
+| Clickjacking | Dashboard embedded inside a hostile frame | `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY` on every UI response |
+| Unsafe static assets | A compromised CDN serves a modified JavaScript bundle | HTMX is vendored locally; CSP disallows third-party script and style sources by default |
+| Dashboard exposed without authentication | Operator binds `/ui` on a public interface | README and ADR document that authentication is not implemented and the dashboard must remain on a trusted network; configuration is binary (`DASHBOARD_ENABLED`) |
+| Attack scenario abuse | A user uploads a custom scenario that runs arbitrary adapters | Attack Lab is a static immutable registry; no endpoint accepts arbitrary scenarios or payloads; adapter overrides are scoped to the run and restored on teardown |
+| Sensitive browser history | Sensitive pages cached in HTMX history or browser back-forward cache | `Cache-Control: no-store` and `htmx-config` `historyCacheSize:0` |
+| Trace-link manipulation | Attacker controls a parameter to forge a Jaeger URL | Jaeger base URL comes from trusted settings; trace ID validated against W3C lowercase 32-hex; link omitted on mismatch; `rel="noopener noreferrer"` applied |
+| Denial of service through dashboard filters | An operator submits a giant page size or unbounded scan | `DASHBOARD_MAX_PAGE_SIZE` clamps page size; query services use bounded per-session call limits; deterministic ordering and pagination |
 
 ## Current attack surface
 

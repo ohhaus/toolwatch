@@ -169,3 +169,56 @@ operational data and may be absent. A strict attribute and metric-label allowlis
 payloads, exception messages, rule identities/evidence, prompts, destinations, and
 high-cardinality IDs. Experimental GenAI attribute names are isolated behind the
 telemetry attribute module. See [ADR 0005](adr/0005-observability-v1.md).
+
+## Dashboard and Attack Lab v1
+
+The dashboard is a presentation adapter under `src/toolwatch/web/`. Its layering is:
+
+```text
+web/router.py        FastAPI routes mounted under DASHBOARD_PREFIX
+web/dependencies.py  Jinja2 environment with autoescape and filters
+web/view_models.py   immutable dataclasses passed to templates
+web/presenters.py    pure transforms from query/domain values to view models
+web/security.py      CSP, COOP, CORP, X-Frame-Options, Cache-Control headers
+web/filters.py       safe time, duration, and tone helpers used by templates
+web/templates/…      Jinja2 templates
+web/static/…         locally served CSS and vendored HTMX subset
+```
+
+Routes only call `DashboardQueryService` (in `application/queries.py`) and existing
+application services. Templates receive view models, never SQLAlchemy entities, and
+never raw domain payloads. Sanitized JSON is rendered as pretty-printed escaped text
+inside `<pre>` blocks; tool output is never rendered as HTML. Jinja autoescape is on
+for every `.html` template and `|safe` is not used on tool-controlled content.
+
+The Attack Lab lives in `src/toolwatch/attack_lab/` and contains:
+
+```text
+models.py     AttackScenario, ScenarioRequest, ExpectedOutcome, AttackRunResult
+registry.py   STATIC_REGISTRY (MappingProxyType built at import time)
+scenarios.py  Twelve frozen scenario definitions
+runner.py    Drives the real ToolWatch pipeline through ASGI HTTP
+__main__.py   `python -m toolwatch.attack_lab list|run|run-all`
+```
+
+The runner instantiates the FastAPI application via `create_app()`, talks to it
+through `httpx.ASGITransport`, seeds tools and rules through the public API, applies
+deterministic scenario setup (disabling a tool, swapping in a slow or failing
+adapter), executes the scenario, observes persisted state through the public API
+(including a fall-back lookup against `GET /api/v1/sessions/{id}/tool-calls` when an
+error envelope omits `call_id`), and restores adapter state on teardown. There is no
+endpoint that accepts arbitrary tools or payloads. Each adapter override is scoped
+to the run and the original mapping proxy is restored before the runner returns.
+
+Jaeger links are constructed only when `JAEGER_UI_PUBLIC_URL` is configured, the
+trace ID comes from a persisted audit event, and the trace ID matches the W3C
+lowercase 32-hex pattern. The OTLP endpoint and exporter credentials are never
+exposed to the browser.
+
+Dashboard read paths are documented per query in `DashboardQueryService`. Bounded
+pagination, deterministic ordering, and explicit per-session call limits keep the
+queries predictable on local-development data volumes. No new tables or indexes are
+introduced for this milestone; the existing audit, tool-call, and session indexes
+support every dashboard read.
+
+See [ADR 0006](adr/0006-dashboard-and-attack-lab-v1.md).

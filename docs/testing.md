@@ -79,3 +79,52 @@ Opt-in local engineering benchmarks are available without becoming a flaky CI ga
 ```bash
 uv run python tests/benchmarks/security_pipeline.py
 ```
+
+## Dashboard, XSS regressions, and Attack Lab
+
+Dashboard tests live in `tests/unit/web/`. They exercise the FastAPI app through
+`httpx.ASGITransport` with stub repositories injected via `dependency_overrides`,
+so no PostgreSQL container is required for HTML rendering checks. Coverage includes
+the dashboard home, sessions list, session detail, tool-call detail, rules list,
+audit list, the static Attack Lab index, the disabled-dashboard 404 path, and the
+disabled-Attack-Lab path. The tests assert that every UI response sets the
+documented `Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy`,
+and `Cache-Control` headers and that locally served static assets carry the same
+headers.
+
+XSS regressions inject inert payloads through the sanitized result and risk-flag
+evidence fields and assert that the rendered HTML escapes `<script>`, `<img …
+onerror=…>`, and `</textarea>` constructs and that the payload is not present in
+any executable position. Sanitized JSON is rendered inside `<pre>` blocks; tool
+output is never used in `innerHTML` paths.
+
+Presenter tests cover status, risk, and decision formatting, sanitized JSON
+size-bounding and truncation, Jaeger link construction (only emitted for valid W3C
+trace IDs with a configured base URL), pagination, and condition-summary
+rendering.
+
+Attack Lab tests are split into a unit-only registry suite and a
+PostgreSQL-backed integration suite. The unit suite asserts that the registry is a
+`MappingProxyType`, that all scenarios have unique alphanumeric identifiers, that
+no scenario targets an adapter outside the trusted allowlist, and that lookups
+return `None` for unknown identifiers. The integration suite runs each scenario
+through the real ToolWatch execution pipeline, asserts the persisted outcome
+matches expectations, and verifies that a unique synthetic secret never appears in
+the database (for redaction-relevant scenarios), in structured logs, or in the
+audit API response. The adapter-timeout scenario uses a deterministic delayed
+adapter; the adapter-failure scenario injects a unique synthetic secret into the
+exception body and asserts that no rendering layer leaks it.
+
+A safety regression test confirms that no scenario can select an adapter outside
+the trusted allowlist, that scenarios with `adapter_called=True` only reference
+allowlisted tool names, and that scenario IDs are alphanumeric.
+
+## Jaeger live smoke
+
+`scripts/verify_jaeger.py` is a developer-driven smoke check that runs against a
+locally started Compose `observability` profile. It issues one allowed and one
+blocked tool call, polls the Jaeger query API with bounded retries and a hard
+timeout, confirms the `execute_tool github.list_issues` span is present, confirms
+no `execute_tool database.query` span is created for the blocked call, and
+searches all returned trace JSON for a unique synthetic secret. It is excluded
+from `make check` and CI. Invoke it with `make verify-jaeger`.

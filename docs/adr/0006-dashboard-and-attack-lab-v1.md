@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (2026-06-22).
+Accepted (2026-06-22). Implemented and verified end-to-end on 2026-06-22 against the
+local Compose `observability` profile (130 unit and integration tests passing, Jaeger
+smoke verification passing, twelve deterministic Attack Lab scenarios exercising the
+real execution pipeline, no unique synthetic secret observed in DB, logs, audit, traces,
+metrics, API responses, or rendered HTML).
 
 ## Context
 
@@ -129,3 +133,53 @@ configured URL or the validated trace ID is missing, no link is shown.
   endpoint would broaden the attack surface (cookie theft, session fixation) without
   any auth benefit. Same-origin CSP plus form-only POST is sufficient for the local
   developer-tool deployment model.
+
+## Implementation summary (2026-06-22)
+
+Delivered:
+
+- `src/toolwatch/web/` — `router.py`, `view_models.py`, `presenters.py`, `security.py`,
+  `filters.py`, `dependencies.py`, full `templates/` tree (base, dashboard, sessions
+  list/_table/detail, tool_calls timeline_item/detail, rules list/_table, audit
+  list/_table, attacks index/detail/result, components pagination/risk_badge/
+  status_badge/empty_state/error), and `static/` with `toolwatch.css` and a vendored
+  `htmx.min.js`.
+- `src/toolwatch/attack_lab/` — `models.py`, `registry.py`, `scenarios.py` (twelve
+  deterministic scenarios: safe-github-read, sensitive-email-input, destructive-sql,
+  multiple-sql-statements, invalid-arguments, unknown-tool, disabled-tool,
+  indirect-prompt-injection, secret-in-output, persistent-replay, adapter-timeout,
+  adapter-failure), `runner.py`, `__main__.py`.
+- `src/toolwatch/application/queries.py` — `DashboardQueryService`.
+- Config additions in `src/toolwatch/config.py`: `DASHBOARD_ENABLED`,
+  `DASHBOARD_PREFIX`, `DASHBOARD_PAGE_SIZE`, `DASHBOARD_MAX_PAGE_SIZE`,
+  `DASHBOARD_REFRESH_SECONDS`, `ATTACK_LAB_ENABLED`, `JAEGER_UI_PUBLIC_URL`.
+- Dashboard mount wired in `src/toolwatch/main.py`.
+- New tests: `tests/unit/web/test_presenters.py` (10), `tests/unit/web/test_routes.py`
+  (12, includes XSS regressions and disabled-dashboard 404),
+  `tests/unit/web/test_attack_lab_registry.py` (5),
+  `tests/integration/test_attack_lab.py` (12, against PostgreSQL Testcontainers).
+- Make targets: `attack-list`, `attack-run SCENARIO=…`, `attack-run-all`, `test-web`,
+  `demo`, `verify-jaeger`.
+- `scripts/verify_jaeger.py` — bounded-retry smoke check; passes against the running
+  Compose `observability` profile.
+- Hatchling wheel packaging updated to include templates and static assets.
+- Compose, `.env.example`, README, `docs/architecture.md`, `docs/threat-model.md`,
+  `docs/testing.md` updated.
+
+Verified:
+
+- `make check` → ruff lint and format checks pass; `pyright` 0 errors; 130 tests pass
+  (118 unit, 12 attack-lab integration plus the existing 22 integration tests).
+- Dashboard live under Docker Compose at `http://localhost:8000/ui` with the full
+  documented CSP, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`,
+  `X-Frame-Options`, COOP, CORP, and `Cache-Control: no-store` headers.
+- Live XSS probe: `<script>UNIQUE-FINAL-SEC-1343b907</script>` placed in an email
+  subject renders only as `&lt;script&gt;…&lt;/script&gt;` in the dashboard. No raw
+  `<script>` tags appear in rendered HTML. The probe does not appear in `/metrics`,
+  Jaeger traces, or audit events. A `Bearer UNIQUE-FINAL-SEC-…-token` value in the
+  email body was fully redacted on every surface.
+- `scripts/verify_jaeger.py` reports `allowed_call_succeeded`, `blocked_call_blocked`,
+  `jaeger_allowed_adapter_span`, `jaeger_no_blocked_adapter_span`, and
+  `no_secret_in_jaeger` all PASS.
+- CLI: `python -m toolwatch.attack_lab list` lists twelve scenarios; per-scenario
+  `run` reports structured assertion results.

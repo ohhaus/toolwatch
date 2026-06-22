@@ -296,10 +296,10 @@ class DashboardQueryService:
                     offset=0,
                 )
                 for call in calls.items:
-                    flagged = (
-                        call.risk_level.value in {"high", "critical"}
-                        or call.status.value in {"blocked", "failed", "timed_out"}
-                    )
+                    flagged = call.risk_level.value in {
+                        "high",
+                        "critical",
+                    } or call.status.value in {"blocked", "failed", "timed_out"}
                     if not flagged:
                         continue
                     tool = await uow.tools.get_by_id(call.tool_definition_id)

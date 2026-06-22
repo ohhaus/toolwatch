@@ -1,6 +1,6 @@
 """Jinja2 template filters and globals."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 _RISK_TONES = {
     "low": "tone-neutral",
@@ -33,16 +33,16 @@ def isoformat_utc(value: datetime | None) -> str:
     if value is None:
         return ""
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def humanize_utc(value: datetime | None) -> str:
     if value is None:
         return "—"
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def duration_label(milliseconds: int | None) -> str:

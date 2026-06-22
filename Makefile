@@ -1,6 +1,7 @@
 .PHONY: install infra-up infra-down run migrate seed test test-unit test-integration
-.PHONY: test-domain test-api
+.PHONY: test-domain test-api test-web
 .PHONY: lint format typecheck check docker-build docker-up docker-down
+.PHONY: attack-list attack-run attack-run-all demo verify-jaeger
 
 install:
 	uv sync --frozen
@@ -56,3 +57,32 @@ docker-up:
 
 docker-down:
 	docker compose --profile observability down
+
+test-web:
+	uv run pytest tests/unit/web -m "not local_llm"
+
+attack-list:
+	uv run python -m toolwatch.attack_lab list
+
+attack-run:
+	uv run python -m toolwatch.attack_lab run $(SCENARIO)
+
+attack-run-all:
+	uv run python -m toolwatch.attack_lab run-all
+
+verify-jaeger:
+	uv run python scripts/verify_jaeger.py
+
+demo:
+	docker compose --profile observability up -d postgres jaeger
+	uv run alembic upgrade head
+	uv run python -m toolwatch.seed
+	@echo ""
+	@echo "ToolWatch demo URLs:"
+	@echo "  Dashboard:  http://localhost:8000/ui"
+	@echo "  API docs:   http://localhost:8000/docs"
+	@echo "  Metrics:    http://localhost:8000/metrics"
+	@echo "  Jaeger UI:  http://localhost:16686"
+	@echo ""
+	@echo "Start the API in another terminal with:  make run"
+	@echo "Run an attack scenario with:             make attack-run SCENARIO=destructive-sql"

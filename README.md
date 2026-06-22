@@ -205,6 +205,75 @@ Stop the stack with:
 make docker-down
 ```
 
+## Dashboard and Attack Lab
+
+ToolWatch ships a server-rendered operational dashboard mounted at `/ui`. It uses
+Jinja2 templates, a small locally vendored HTMX subset, and hand-written CSS. There
+is no Node.js, npm, or CDN dependency.
+
+```bash
+make demo                 # start infrastructure, apply migrations, seed tools and rules
+make run                  # in another terminal, start the API with reload
+open http://localhost:8000/ui
+```
+
+The dashboard provides:
+
+- a summary of total/active sessions, total/blocked/flagged/failed/timed-out/replayed
+  calls, risk-flag counts, and redaction-event counts;
+- a sessions list with status, agent identity, started time, tool-call count, highest
+  observed risk, and blocked/flagged/failed counters;
+- session detail with chronological tool-call and audit timelines;
+- tool-call detail with sanitized arguments, sanitized result, risk flags, matched
+  rules, audit history, correlation IDs, and a strictly validated Jaeger trace link
+  when `JAEGER_UI_PUBLIC_URL` is configured;
+- a read-only rules list;
+- a paginated audit-event list with filters by event type, trace ID, and correlation
+  ID;
+- the Attack Lab.
+
+The dashboard is read-only. It never displays raw prompts, raw arguments, raw
+results, secrets, HMAC fingerprints, adapter configuration, internal hostnames, or
+exception messages. The only state-changing route is `POST /ui/attacks/{id}/run`,
+gated by `ATTACK_LAB_ENABLED`. Every UI response sets a strict
+`Content-Security-Policy` with `default-src 'self'`, `frame-ancestors 'none'`, and
+`form-action 'self'`, plus `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, `Permissions-Policy`, and `Cache-Control: no-store`.
+
+The dashboard does **not** implement authentication. Do not expose it to the public
+Internet.
+
+The Attack Lab ships a static, immutable registry of twelve reproducible scenarios.
+Each scenario runs through the real ToolWatch execution pipeline (sessions API,
+tool-call API, security pipeline, audit, telemetry); arbitrary user-submitted tools
+or payloads are not supported. The Attack Lab can be driven from the dashboard, from
+Make targets, or directly through the module:
+
+```bash
+make attack-list
+make attack-run SCENARIO=destructive-sql
+make attack-run-all
+
+uv run python -m toolwatch.attack_lab list
+uv run python -m toolwatch.attack_lab run sensitive-email-input
+```
+
+Once an attack scenario completes, follow the rendered link to inspect the resulting
+sanitized session, tool-call detail, and audit timeline. Critical and high-risk
+calls also appear on the dashboard home.
+
+Run the live Jaeger smoke verification after starting the observability profile:
+
+```bash
+make verify-jaeger
+```
+
+The script issues a deterministic allowed call (`github.list_issues`) and a blocked
+call (`DROP TABLE …` against `database.query`), polls Jaeger for the
+`execute_tool github.list_issues` span, confirms there is no `execute_tool
+database.query` span, and verifies that a unique synthetic secret never appears in
+any captured trace. It uses bounded retries and a hard timeout.
+
 ## Verification
 
 ```bash

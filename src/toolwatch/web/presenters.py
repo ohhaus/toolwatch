@@ -253,9 +253,7 @@ def dashboard_summary(
         risk_flags=counts.risk_flags,
         redaction_events=counts.redaction_events,
         recent_sessions=tuple(session_list_item(item) for item in recent_sessions),
-        recent_high_risk_calls=tuple(
-            tool_call_timeline_item(entry) for entry in recent_high_risk
-        ),
+        recent_high_risk_calls=tuple(tool_call_timeline_item(entry) for entry in recent_high_risk),
     )
 
 
