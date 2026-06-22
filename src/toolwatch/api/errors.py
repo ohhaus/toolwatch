@@ -50,6 +50,10 @@ class GatewayTimeoutErrorResponse(ErrorResponse):
     """OpenAPI model for sanitized adapter timeouts."""
 
 
+class ForbiddenErrorResponse(ErrorResponse):
+    """OpenAPI model for deterministic runtime blocks."""
+
+
 def register_error_handlers(application: FastAPI) -> None:
     """Register fixed handlers that never expose infrastructure exceptions."""
 
@@ -65,6 +69,7 @@ def error_responses(
     conflict: bool = False,
     bad_gateway: bool = False,
     gateway_timeout: bool = False,
+    forbidden: bool = False,
 ) -> dict[int | str, dict[str, Any]]:
     """Build reusable OpenAPI response declarations."""
 
@@ -80,6 +85,8 @@ def error_responses(
         responses[status.HTTP_502_BAD_GATEWAY] = {"model": BadGatewayErrorResponse}
     if gateway_timeout:
         responses[status.HTTP_504_GATEWAY_TIMEOUT] = {"model": GatewayTimeoutErrorResponse}
+    if forbidden:
+        responses[status.HTTP_403_FORBIDDEN] = {"model": ForbiddenErrorResponse}
     return responses
 
 
@@ -125,5 +132,8 @@ def _message_for(code: str) -> str:
         "tool_payload_too_deep": "The tool payload exceeds the configured depth limit.",
         "idempotency_conflict": "The idempotency key was reused for another request.",
         "execution_in_progress": "An execution with this idempotency key is in progress.",
+        "tool_call_blocked": "The tool call was blocked by a runtime safety rule.",
+        "blocking_rule_not_found": "The blocking rule was not found.",
+        "blocking_rule_already_exists": "The blocking rule name is already in use.",
     }
     return messages.get(code, "The request could not be completed.")

@@ -1,5 +1,6 @@
 """Tool-call execution domain model."""
 
+from toolwatch.domain.security import RiskFlag
 from toolwatch.domain.tool_calls.adapters import (
     AdapterExecutionError,
     ToolAdapter,
@@ -26,4 +27,5 @@ __all__ = [
     "ToolAdapterRegistry",
     "ToolExecutionContext",
     "ToolResultMetadata",
+    "RiskFlag",
 ]

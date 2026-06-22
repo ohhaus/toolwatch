@@ -1,6 +1,7 @@
 """Application tests for deterministic tool-call orchestration."""
 
 import asyncio
+from builtins import list as list_type
 from collections.abc import Mapping
 from types import TracebackType
 from typing import Self, cast
@@ -25,6 +26,12 @@ from toolwatch.application.tool_calls import (
 from toolwatch.config import Settings
 from toolwatch.domain.agents import Agent, AgentIdentity
 from toolwatch.domain.common import JSONValue
+from toolwatch.domain.security import (
+    AuditEvent,
+    AuditEventType,
+    BlockingRule,
+    RiskFlag,
+)
 from toolwatch.domain.sessions import AgentSession, SessionStatus
 from toolwatch.domain.tool_calls import (
     ToolCall,
@@ -43,6 +50,9 @@ class MemoryState:
         self.tools: dict[UUID, ToolDefinition] = {}
         self.calls: dict[UUID, ToolCall] = {}
         self.results: dict[UUID, ToolResultMetadata] = {}
+        self.flags: list[RiskFlag] = []
+        self.rules: dict[UUID, BlockingRule] = {}
+        self.audits: list[AuditEvent] = []
 
 
 class MemoryAgents:
@@ -199,6 +209,83 @@ class MemoryResults:
         return metadata
 
 
+class MemoryRiskFlags:
+    def __init__(self, state: MemoryState) -> None:
+        self.state = state
+
+    async def list_for_tool_call(self, call_id: UUID) -> list[RiskFlag]:
+        return [flag for flag in self.state.flags if flag.tool_call_id == call_id]
+
+    async def create_many(self, flags: list[RiskFlag]) -> list[RiskFlag]:
+        self.state.flags.extend(flags)
+        return flags
+
+
+class MemoryRules:
+    def __init__(self, state: MemoryState) -> None:
+        self.state = state
+
+    async def get_by_id(self, rule_id: UUID) -> BlockingRule | None:
+        return self.state.rules.get(rule_id)
+
+    async def list(
+        self,
+        *,
+        enabled: bool | None,
+        limit: int,
+        offset: int,
+    ) -> Page[BlockingRule]:
+        values = [
+            rule for rule in self.state.rules.values() if enabled is None or rule.enabled is enabled
+        ]
+        return Page(values[offset : offset + limit], len(values), limit, offset)
+
+    async def list_enabled(self) -> list_type[BlockingRule]:
+        return [rule for rule in self.state.rules.values() if rule.enabled]
+
+    async def create(self, rule: BlockingRule) -> BlockingRule:
+        self.state.rules[rule.id] = rule
+        return rule
+
+    async def update(self, rule: BlockingRule) -> BlockingRule:
+        self.state.rules[rule.id] = rule
+        return rule
+
+
+class MemoryAuditEvents:
+    def __init__(self, state: MemoryState) -> None:
+        self.state = state
+
+    async def list(
+        self,
+        *,
+        session_id: UUID | None,
+        tool_call_id: UUID | None,
+        event_type: AuditEventType | None,
+        limit: int,
+        offset: int,
+    ) -> Page[AuditEvent]:
+        values = [
+            event
+            for event in self.state.audits
+            if (session_id is None or event.session_id == session_id)
+            and (tool_call_id is None or event.tool_call_id == tool_call_id)
+            and (event_type is None or event.event_type is event_type)
+        ]
+        return Page(values[offset : offset + limit], len(values), limit, offset)
+
+    async def create(self, event: AuditEvent) -> AuditEvent:
+        self.state.audits.append(event)
+        return event
+
+    async def create_many(
+        self,
+        events: list_type[AuditEvent],
+    ) -> list_type[AuditEvent]:
+        self.state.audits.extend(events)
+        return events
+
+
 class MemoryUow:
     def __init__(self, state: MemoryState) -> None:
         self.agents = MemoryAgents(state)
@@ -206,6 +293,9 @@ class MemoryUow:
         self.tools = MemoryTools(state)
         self.tool_calls = MemoryCalls(state)
         self.tool_results = MemoryResults(state)
+        self.risk_flags = MemoryRiskFlags(state)
+        self.rules = MemoryRules(state)
+        self.audit_events = MemoryAuditEvents(state)
 
     async def __aenter__(self) -> Self:
         return self
@@ -292,7 +382,7 @@ async def test_success_and_idempotent_retry_execute_once() -> None:
         session_id=session.id,
         tool_name="demo.execute",
         tool_version="1",
-        arguments={"value": "secret-argument"},
+        arguments={"value": "Bearer unit-secret-argument"},
         idempotency_key=key,
     )
 
@@ -303,7 +393,7 @@ async def test_success_and_idempotent_retry_execute_once() -> None:
     assert second.replayed is True
     assert adapter.calls == 1
     assert len(state.calls) == 1
-    assert all("secret-argument" not in repr(item) for item in state.calls.values())
+    assert all("unit-secret-argument" not in repr(item) for item in state.calls.values())
 
 
 @pytest.mark.asyncio

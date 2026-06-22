@@ -12,8 +12,11 @@ from toolwatch.application.errors import (
 )
 from toolwatch.application.ports import (
     AgentRepository,
+    AuditEventRepository,
+    BlockingRuleRepository,
     Page,
     RepositoryConflict,
+    RiskFlagRepository,
     SessionRepository,
     ToolCallRepository,
     ToolRepository,
@@ -22,6 +25,7 @@ from toolwatch.application.ports import (
 from toolwatch.application.sessions import CreateSession, SessionService
 from toolwatch.application.tools import TOOL_UNIQUE_CONSTRAINT, ToolService
 from toolwatch.domain.agents import Agent, AgentIdentity
+from toolwatch.domain.security import AuditEvent
 from toolwatch.domain.sessions import AgentSession, SessionStatus
 from toolwatch.domain.tools import RiskLevel, ToolDefinition
 
@@ -130,6 +134,9 @@ class MemoryUnitOfWork:
     sessions: SessionRepository
     tool_calls: ToolCallRepository
     tool_results: ToolResultMetadataRepository
+    risk_flags: RiskFlagRepository
+    rules: BlockingRuleRepository
+    audit_events: AuditEventRepository
 
     def __init__(self) -> None:
         self.agents = MemoryAgents()
@@ -137,6 +144,9 @@ class MemoryUnitOfWork:
         self.sessions = MemorySessions()
         self.tool_calls = cast(ToolCallRepository, object())
         self.tool_results = cast(ToolResultMetadataRepository, object())
+        self.risk_flags = cast(RiskFlagRepository, object())
+        self.rules = cast(BlockingRuleRepository, object())
+        self.audit_events = cast(AuditEventRepository, MemoryAuditEvents())
         self.commits = 0
 
     async def __aenter__(self) -> Self:
@@ -152,6 +162,15 @@ class MemoryUnitOfWork:
 
     async def commit(self) -> None:
         self.commits += 1
+
+
+class MemoryAuditEvents:
+    def __init__(self) -> None:
+        self.items: list[AuditEvent] = []
+
+    async def create(self, event: AuditEvent) -> AuditEvent:
+        self.items.append(event)
+        return event
 
 
 def tool() -> ToolDefinition:

@@ -1,10 +1,11 @@
-"""Tool-call execution and payload-free read APIs."""
+"""Tool-call execution and sanitized read APIs."""
 
 from datetime import datetime
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from toolwatch.api.dependencies import (
@@ -12,7 +13,8 @@ from toolwatch.api.dependencies import (
     get_terminal_response_cache,
     get_uow_factory,
 )
-from toolwatch.api.errors import error_responses
+from toolwatch.api.errors import ErrorBody, ErrorResponse, error_responses
+from toolwatch.application.errors import ToolCallBlocked
 from toolwatch.application.ports import UnitOfWorkFactory
 from toolwatch.application.tool_calls import (
     ExecuteToolCall,
@@ -23,8 +25,9 @@ from toolwatch.application.tool_calls import (
     ToolCallService,
 )
 from toolwatch.config import Settings, get_settings
-from toolwatch.domain.common import JSONValue
+from toolwatch.domain.common import JSONObject, JSONValue
 from toolwatch.domain.tool_calls import ToolCallDecision, ToolCallStatus
+from toolwatch.domain.tools import RiskLevel
 from toolwatch.infrastructure.adapters import AdapterRegistry
 
 router = APIRouter(tags=["tool-calls"])
@@ -34,7 +37,6 @@ class ToolCallExecuteRequest(BaseModel):
     """Request to execute one trusted registered tool version."""
 
     model_config = ConfigDict(extra="forbid")
-
     session_id: UUID
     tool: str = Field(min_length=3, max_length=255)
     tool_version: str = Field(min_length=1, max_length=255)
@@ -43,15 +45,18 @@ class ToolCallExecuteRequest(BaseModel):
 
 
 class ToolCallExecuteResponse(BaseModel):
-    """Direct response containing validated transient adapter output."""
+    """Sanitized direct or persistently replayed response."""
 
     call_id: UUID
     status: ToolCallStatus
     decision: ToolCallDecision
+    risk: RiskLevel
+    flags: list[str]
+    matched_rules: list[str]
     tool: str
     tool_version: str
     duration_ms: int | None
-    result: JSONValue
+    result: JSONValue | None
 
 
 class ToolCallError(BaseModel):
@@ -62,7 +67,7 @@ class ToolCallError(BaseModel):
 
 
 class ToolCallResponse(BaseModel):
-    """Payload-free persisted tool-call representation."""
+    """Sanitized persisted tool-call representation."""
 
     id: UUID
     session_id: UUID
@@ -72,6 +77,11 @@ class ToolCallResponse(BaseModel):
     sequence_number: int
     status: ToolCallStatus
     decision: ToolCallDecision
+    risk: RiskLevel
+    flags: list[str]
+    matched_rules: list[str]
+    arguments: JSONObject
+    result: JSONValue | None
     duration_ms: int | None
     error: ToolCallError | None
     started_at: datetime | None
@@ -80,7 +90,7 @@ class ToolCallResponse(BaseModel):
 
 
 class ToolCallListResponse(BaseModel):
-    """Paginated session call history."""
+    """Paginated sanitized session call history."""
 
     items: list[ToolCallResponse]
     limit: int
@@ -102,6 +112,7 @@ SettingsDependency = Annotated[Settings, Depends(get_settings)]
         conflict=True,
         bad_gateway=True,
         gateway_timeout=True,
+        forbidden=True,
     ),
 )
 async def execute_tool_call(
@@ -111,19 +122,41 @@ async def execute_tool_call(
     cache: CacheDependency,
     settings: SettingsDependency,
     idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
-) -> ToolCallExecuteResponse:
-    """Execute a trusted adapter after deterministic validation."""
+) -> ToolCallExecuteResponse | JSONResponse:
+    """Execute a trusted adapter after deterministic security evaluation."""
 
-    execution = await ToolCallService(uow_factory, adapters, settings, cache).execute(
-        ExecuteToolCall(
-            session_id=request.session_id,
-            tool_name=request.tool,
-            tool_version=request.tool_version,
-            arguments=request.arguments,
-            idempotency_key=idempotency_key,
-            parent_call_id=request.parent_call_id,
+    service = ToolCallService(uow_factory, adapters, settings, cache)
+    try:
+        execution = await service.execute(
+            ExecuteToolCall(
+                session_id=request.session_id,
+                tool_name=request.tool,
+                tool_version=request.tool_version,
+                arguments=request.arguments,
+                idempotency_key=idempotency_key,
+                parent_call_id=request.parent_call_id,
+            )
         )
-    )
+    except ToolCallBlocked as exc:
+        if not isinstance(exc.outcome, ToolCallExecution):
+            raise
+        outcome = exc.outcome
+        body = {
+            "call_id": str(outcome.call.id),
+            "status": outcome.call.status.value,
+            "decision": outcome.call.decision.value,
+            "risk": outcome.call.risk_level.value,
+            "flags": [flag.code.value for flag in outcome.flags],
+            "matched_rules": list(outcome.matched_rules),
+            "error": ErrorResponse(
+                error=ErrorBody(
+                    code=exc.code,
+                    message="The tool call was blocked by a runtime safety rule.",
+                    correlation_id=str(uuid4()),
+                )
+            ).model_dump()["error"],
+        }
+        return JSONResponse(status_code=403, content=body)
     return _execution_response(execution)
 
 
@@ -139,10 +172,10 @@ async def get_tool_call(
     cache: CacheDependency,
     settings: SettingsDependency,
 ) -> ToolCallResponse:
-    """Return one persisted call without arguments or result payload."""
+    """Return one persisted call with sanitized payloads only."""
 
-    service = ToolCallService(uow_factory, adapters, settings, cache)
-    return _call_response(await service.get(call_id))
+    detail = await ToolCallService(uow_factory, adapters, settings, cache).get(call_id)
+    return _call_response(detail)
 
 
 @router.get(
@@ -162,8 +195,7 @@ async def list_session_tool_calls(
 ) -> ToolCallListResponse:
     """List calls by monotonically increasing session sequence number."""
 
-    service = ToolCallService(uow_factory, adapters, settings, cache)
-    page = await service.list_for_session(
+    page = await ToolCallService(uow_factory, adapters, settings, cache).list_for_session(
         session_id,
         ToolCallFilters(status=call_status, limit=limit, offset=offset),
     )
@@ -180,6 +212,9 @@ def _execution_response(execution: ToolCallExecution) -> ToolCallExecuteResponse
         call_id=execution.call.id,
         status=execution.call.status,
         decision=execution.call.decision,
+        risk=execution.call.risk_level,
+        flags=[flag.code.value for flag in execution.flags],
+        matched_rules=list(execution.matched_rules),
         tool=execution.tool.name,
         tool_version=execution.tool.version,
         duration_ms=execution.call.duration_ms,
@@ -206,6 +241,11 @@ def _call_response(detail: ToolCallDetail) -> ToolCallResponse:
         sequence_number=call.sequence_number,
         status=call.status,
         decision=call.decision,
+        risk=call.risk_level,
+        flags=[flag.code.value for flag in detail.flags],
+        matched_rules=list(detail.matched_rules),
+        arguments=call.redacted_arguments,
+        result=detail.result,
         duration_ms=call.duration_ms,
         error=error,
         started_at=call.started_at,

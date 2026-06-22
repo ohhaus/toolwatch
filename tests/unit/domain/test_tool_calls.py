@@ -22,13 +22,16 @@ def call() -> ToolCall:
         arguments_hash="a" * 64,
         request_hash="b" * 64,
         idempotency_key=uuid4(),
+        created_at=datetime(2026, 6, 22, 9, 59, tzinfo=UTC),
+        updated_at=datetime(2026, 6, 22, 9, 59, tzinfo=UTC),
     )
 
 
 def test_complete_success_state_machine() -> None:
     received = call()
     validating = received.transition_to(ToolCallStatus.VALIDATING)
-    executing = validating.transition_to(
+    evaluating = validating.transition_to(ToolCallStatus.EVALUATING)
+    executing = evaluating.transition_to(
         ToolCallStatus.EXECUTING,
         now=datetime(2026, 6, 22, 10, tzinfo=UTC),
     )

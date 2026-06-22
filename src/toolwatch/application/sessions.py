@@ -10,6 +10,7 @@ from toolwatch.application.errors import (
 from toolwatch.application.ports import Page, UnitOfWorkFactory
 from toolwatch.domain.agents import Agent, AgentIdentity
 from toolwatch.domain.common import JSONObject, empty_json_object
+from toolwatch.domain.security import AuditEvent, AuditEventType
 from toolwatch.domain.sessions import AgentSession, SessionStatus
 from toolwatch.domain.sessions.models import InvalidSessionTransition
 
@@ -66,6 +67,13 @@ class SessionService:
                     metadata=request.metadata,
                 )
             )
+            await uow.audit_events.create(
+                AuditEvent(
+                    session_id=session.id,
+                    event_type=AuditEventType.SESSION_STARTED,
+                    payload_redacted={"status": session.status.value},
+                )
+            )
             await uow.commit()
         return SessionWithAgent(session=session, agent=agent)
 
@@ -116,6 +124,13 @@ class SessionService:
                 raise InvalidSessionTransitionError from exc
             if terminal is not session:
                 terminal = await uow.sessions.update_status(terminal)
+                await uow.audit_events.create(
+                    AuditEvent(
+                        session_id=terminal.id,
+                        event_type=AuditEventType.SESSION_COMPLETED,
+                        payload_redacted={"status": terminal.status.value},
+                    )
+                )
                 await uow.commit()
             agent = await uow.agents.get_by_id(terminal.agent_id)
             if agent is None:

@@ -3,8 +3,9 @@
 ToolWatch is an observability and runtime-safety proxy for AI-agent tool calls. It is
 designed to validate calls, apply deterministic safety controls, redact sensitive data,
 and provide auditability before trusted adapters reach downstream services. The current
-milestone implements the first payload-free execution pipeline for three trusted
-in-process mock adapters. It does not connect to Ollama or any real GitHub, email,
+milestone implements Security Pipeline v1 for three trusted in-process mock adapters:
+recursive redaction, deterministic risk/rules, sanitized persistence, audit events, and
+PostgreSQL-backed replay. It does not connect to Ollama or any real GitHub, email,
 database, or other external service.
 
 ToolWatch is experimental and is not production-ready.
@@ -15,7 +16,8 @@ The application is a modular monolith with dependency direction
 `API → Application → Domain`; infrastructure implements domain-facing ports. The API
 exposes health checks, registry/session APIs, and `/api/v1/tool-calls`. Application use
 cases own short transaction boundaries; adapter I/O runs outside PostgreSQL transactions.
-Raw arguments and result bodies are never persisted in this milestone.
+Only sanitized arguments and result bodies cross the persistence, audit, logging, and
+read-API boundary. Raw values exist transiently inside validated execution only.
 
 See [the architecture guide](docs/architecture.md), [product specification](docs/product-spec.md),
 and [threat model](docs/threat-model.md).
@@ -96,7 +98,7 @@ Prompt storage is disabled by default (`STORE_PROMPTS=false`), so raw prompts ar
 persisted. Tool adapter configuration is not returned by read APIs. Registering a tool
 does not make any downstream call.
 
-Seed the three reviewed mock definitions explicitly:
+Seed the three reviewed mock definitions and four default development rules explicitly:
 
 ```bash
 make seed
@@ -121,15 +123,31 @@ curl -X POST http://localhost:8000/api/v1/tool-calls \
   -d '{"session_id":"<session-id>","tool":"database.query","tool_version":"1.0.0","arguments":{"query":"SELECT id, name FROM projects"}}'
 ```
 
-Repeating a request with the same idempotency key and identical body does not invoke the
-adapter again while the terminal response remains in this process. Reusing the key for a
-different request returns `409 idempotency_conflict`; an overlapping duplicate returns
-`409 execution_in_progress`.
+An email body containing `Bearer example-secret` is persisted and returned as
+`[REDACTED]`, with `sensitive_input` and HMAC-derived internal fingerprint metadata.
+Production deployments must set a strong independent `REDACTION_FINGERPRINT_KEY`; the
+checked-in value is development-only.
 
-Until recursive redaction is implemented, raw tool arguments and results are deliberately
-absent from PostgreSQL and lifecycle logs. Only canonical hashes and safe metadata are
-stored; a validated result is returned directly to the caller. Ollama remains
-disconnected and optional.
+The seeded destructive-SQL and multiple-statement rules return `403 tool_call_blocked`
+before the adapter runs. Email side effects are flagged, while the read-only GitHub
+fixture is normally allowed. Rules are available under `/api/v1/rules`.
+
+Audit events can be read from:
+
+```bash
+curl http://localhost:8000/api/v1/audit-events
+curl http://localhost:8000/api/v1/sessions/<session-id>/audit-events
+curl http://localhost:8000/api/v1/tool-calls/<call-id>/audit-events
+```
+
+Repeating a terminal request with the same idempotency key and identical body reconstructs
+the sanitized response from PostgreSQL, including after process restart, without invoking
+the adapter. Reusing the key for a different request returns `409 idempotency_conflict`;
+an overlapping duplicate returns `409 execution_in_progress`.
+
+The indirect prompt-injection detector is a conservative string heuristic. It flags
+suspicious tool output but is not a guarantee and does not itself prove malicious intent.
+Ollama remains disconnected and optional.
 
 Stop local infrastructure with:
 

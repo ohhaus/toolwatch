@@ -62,6 +62,17 @@ def validate_json_object(
     return normalized
 
 
+def validate_json_value(
+    value: object,
+    field_name: str,
+    *,
+    max_depth: int = MAX_JSON_DEPTH,
+) -> JSONValue:
+    """Validate and copy one bounded JSON-compatible value."""
+
+    return _validate_json_value(value, field_name, depth=0, max_depth=max_depth)
+
+
 def _validate_json_value(
     value: object,
     field_name: str,

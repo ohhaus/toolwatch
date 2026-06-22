@@ -1,5 +1,6 @@
 """Application-facing persistence ports."""
 
+from builtins import list as list_type
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import TracebackType
@@ -7,6 +8,12 @@ from typing import Protocol, Self
 from uuid import UUID
 
 from toolwatch.domain.agents import Agent, AgentIdentity
+from toolwatch.domain.security import (
+    AuditEvent,
+    AuditEventType,
+    BlockingRule,
+    RiskFlag,
+)
 from toolwatch.domain.sessions import AgentSession, SessionStatus
 from toolwatch.domain.tool_calls import ToolCall, ToolCallStatus, ToolResultMetadata
 from toolwatch.domain.tools import RiskLevel, ToolDefinition
@@ -117,6 +124,55 @@ class ToolResultMetadataRepository(Protocol):
     async def create(self, metadata: ToolResultMetadata) -> ToolResultMetadata: ...
 
 
+class RiskFlagRepository(Protocol):
+    """Persistence operations for safe risk flags."""
+
+    async def list_for_tool_call(self, call_id: UUID) -> list[RiskFlag]: ...
+
+    async def create_many(self, flags: list[RiskFlag]) -> list[RiskFlag]: ...
+
+
+class BlockingRuleRepository(Protocol):
+    """Persistence operations for deterministic runtime rules."""
+
+    async def get_by_id(self, rule_id: UUID) -> BlockingRule | None: ...
+
+    async def list(
+        self,
+        *,
+        enabled: bool | None,
+        limit: int,
+        offset: int,
+    ) -> Page[BlockingRule]: ...
+
+    async def list_enabled(self) -> list_type[BlockingRule]: ...
+
+    async def create(self, rule: BlockingRule) -> BlockingRule: ...
+
+    async def update(self, rule: BlockingRule) -> BlockingRule: ...
+
+
+class AuditEventRepository(Protocol):
+    """Append-only persistence operations for sanitized audit events."""
+
+    async def list(
+        self,
+        *,
+        session_id: UUID | None,
+        tool_call_id: UUID | None,
+        event_type: AuditEventType | None,
+        limit: int,
+        offset: int,
+    ) -> Page[AuditEvent]: ...
+
+    async def create(self, event: AuditEvent) -> AuditEvent: ...
+
+    async def create_many(
+        self,
+        events: list_type[AuditEvent],
+    ) -> list_type[AuditEvent]: ...
+
+
 class UnitOfWork(Protocol):
     """Transaction boundary owned by an application use case."""
 
@@ -125,6 +181,9 @@ class UnitOfWork(Protocol):
     sessions: SessionRepository
     tool_calls: ToolCallRepository
     tool_results: ToolResultMetadataRepository
+    risk_flags: RiskFlagRepository
+    rules: BlockingRuleRepository
+    audit_events: AuditEventRepository
 
     async def __aenter__(self) -> Self: ...
 

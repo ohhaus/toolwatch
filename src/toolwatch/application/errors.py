@@ -138,3 +138,28 @@ class ExecutionInProgress(ApplicationError):
 
     code = "execution_in_progress"
     status_code = 409
+
+
+class ToolCallBlocked(ApplicationError):
+    """A deterministic runtime rule blocked adapter execution."""
+
+    code = "tool_call_blocked"
+    status_code = 403
+
+    def __init__(self, outcome: object | None = None) -> None:
+        super().__init__(self.code)
+        self.outcome = outcome
+
+
+class BlockingRuleNotFound(ApplicationError):
+    """The requested runtime rule does not exist."""
+
+    code = "blocking_rule_not_found"
+    status_code = 404
+
+
+class BlockingRuleAlreadyExists(ApplicationError):
+    """A runtime rule name must be unique."""
+
+    code = "blocking_rule_already_exists"
+    status_code = 409

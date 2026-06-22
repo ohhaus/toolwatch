@@ -13,6 +13,11 @@ restricted Draft 2020-12 schemas and explicit formats, payload depth/string limi
 trusted mock adapters, timeout handling, invalid output, and idempotent orchestration
 with injected counters. Adapter tests perform no network I/O.
 
+Security unit tests include Hypothesis properties for JSON compatibility and redaction
+idempotence, plus deterministic coverage for key/value detectors, HMAC fingerprints,
+depth/node limits, SQL risk, indirect prompt injection, finite rule conditions, priority,
+and block precedence.
+
 Integration tests live in `tests/integration` and carry the `integration` marker. They
 use one disposable PostgreSQL 17 Testcontainer; SQLite is not an acceptable substitute.
 The suite applies Alembic to an empty database, exercises downgrade/upgrade, verifies
@@ -20,9 +25,10 @@ UUID/FK/JSONB persistence, pagination, sanitized failures, prompt omission, dupl
 tool races, and concurrent logical-agent reuse.
 
 Execution integration tests verify named idempotency and sequence constraints,
-one-to-one result metadata, terminal persistence, concurrent same-key at-most-once
-behavior, concurrent sequence allocation, payload-free read APIs, and absence of raw
-argument and result fixtures from database rows and captured logs.
+one-to-one sanitized results, terminal persistence, concurrent same-key at-most-once
+behavior, concurrent sequence allocation, restart-safe PostgreSQL replay, blocked
+downstream prevention, audit ordering, and absence of unique raw input/output secrets
+from database rows, logs, errors, audit payloads, and API reads.
 
 Tests requiring a developer-managed Ollama process must carry the `local_llm` marker.
 That marker is excluded by `make test`, `make check`, and CI. No such tests are part of
@@ -54,3 +60,9 @@ make migrate
 
 CI additionally applies Alembic migrations to an empty PostgreSQL service before running
 the test suite.
+
+Opt-in local engineering benchmarks are available without becoming a flaky CI gate:
+
+```bash
+uv run python tests/benchmarks/security_pipeline.py
+```

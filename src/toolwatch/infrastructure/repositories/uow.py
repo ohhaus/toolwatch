@@ -6,6 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from toolwatch.application.ports import (
     AgentRepository,
+    AuditEventRepository,
+    BlockingRuleRepository,
+    RiskFlagRepository,
     SessionRepository,
     ToolCallRepository,
     ToolRepository,
@@ -13,6 +16,9 @@ from toolwatch.application.ports import (
 )
 from toolwatch.infrastructure.repositories.sqlalchemy import (
     SqlAlchemyAgentRepository,
+    SqlAlchemyAuditEventRepository,
+    SqlAlchemyBlockingRuleRepository,
+    SqlAlchemyRiskFlagRepository,
     SqlAlchemySessionRepository,
     SqlAlchemyToolCallRepository,
     SqlAlchemyToolRepository,
@@ -28,6 +34,9 @@ class SqlAlchemyUnitOfWork:
     sessions: SessionRepository
     tool_calls: ToolCallRepository
     tool_results: ToolResultMetadataRepository
+    risk_flags: RiskFlagRepository
+    rules: BlockingRuleRepository
+    audit_events: AuditEventRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -41,6 +50,9 @@ class SqlAlchemyUnitOfWork:
         self.sessions = SqlAlchemySessionRepository(session)
         self.tool_calls = SqlAlchemyToolCallRepository(session)
         self.tool_results = SqlAlchemyToolResultMetadataRepository(session)
+        self.risk_flags = SqlAlchemyRiskFlagRepository(session)
+        self.rules = SqlAlchemyBlockingRuleRepository(session)
+        self.audit_events = SqlAlchemyAuditEventRepository(session)
         return self
 
     async def __aexit__(

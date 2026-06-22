@@ -66,7 +66,10 @@ def test_session_creation_is_active() -> None:
 
 
 def test_valid_terminal_transition_and_idempotence() -> None:
-    session = AgentSession(agent_id=Agent(identity=AgentIdentity("demo", "local", "m")).id)
+    session = AgentSession(
+        agent_id=Agent(identity=AgentIdentity("demo", "local", "m")).id,
+        started_at=datetime(2026, 6, 21, tzinfo=UTC),
+    )
     finished_at = datetime(2026, 6, 22, tzinfo=UTC)
 
     completed = session.transition_to(SessionStatus.COMPLETED, finished_at=finished_at)

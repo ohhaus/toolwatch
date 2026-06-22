@@ -1,5 +1,6 @@
 """SQLAlchemy implementations of application repository ports."""
 
+from builtins import list as list_type
 from typing import cast
 from uuid import UUID
 
@@ -12,6 +13,15 @@ from sqlalchemy.sql.elements import ColumnElement
 from toolwatch.application.ports import Page, RepositoryConflict
 from toolwatch.domain.agents import Agent, AgentIdentity
 from toolwatch.domain.common import JSONObject
+from toolwatch.domain.security import (
+    AuditEvent,
+    AuditEventType,
+    BlockingRule,
+    RiskFlag,
+    RiskFlagCode,
+    RiskFlagSource,
+    RuleAction,
+)
 from toolwatch.domain.sessions import AgentSession, SessionStatus
 from toolwatch.domain.tool_calls import (
     ToolCall,
@@ -23,6 +33,9 @@ from toolwatch.domain.tools import RiskLevel, ToolDefinition
 from toolwatch.infrastructure.database.models import (
     AgentModel,
     AgentSessionModel,
+    AuditEventModel,
+    BlockingRuleModel,
+    RiskFlagModel,
     ToolCallModel,
     ToolDefinitionModel,
     ToolResultMetadataModel,
@@ -296,6 +309,9 @@ class SqlAlchemyToolCallRepository:
             raise RuntimeError("tool call disappeared during update")
         model.status = call.status.value
         model.decision = call.decision.value
+        model.risk_level = call.risk_level.value
+        model.matched_rule_ids = [str(rule_id) for rule_id in call.matched_rule_ids]
+        model.redacted_arguments = call.redacted_arguments
         model.started_at = call.started_at
         model.finished_at = call.finished_at
         model.duration_ms = call.duration_ms
@@ -327,6 +343,8 @@ class SqlAlchemyToolResultMetadataRepository:
             content_type=metadata.content_type,
             size_bytes=metadata.size_bytes,
             schema_valid=metadata.schema_valid,
+            redacted_payload=metadata.redacted_payload,
+            truncated=metadata.truncated,
             created_at=metadata.created_at,
         )
         self._session.add(model)
@@ -411,6 +429,9 @@ def _tool_call_to_model(call: ToolCall) -> ToolCallModel:
         idempotency_key=call.idempotency_key,
         status=call.status.value,
         decision=call.decision.value,
+        risk_level=call.risk_level.value,
+        matched_rule_ids=[str(rule_id) for rule_id in call.matched_rule_ids],
+        redacted_arguments=call.redacted_arguments,
         started_at=call.started_at,
         finished_at=call.finished_at,
         duration_ms=call.duration_ms,
@@ -433,6 +454,9 @@ def _tool_call_from_model(model: ToolCallModel) -> ToolCall:
         idempotency_key=model.idempotency_key,
         status=ToolCallStatus(model.status),
         decision=ToolCallDecision(model.decision),
+        risk_level=RiskLevel(model.risk_level),
+        matched_rule_ids=tuple(UUID(value) for value in model.matched_rule_ids),
+        redacted_arguments=model.redacted_arguments,
         started_at=model.started_at,
         finished_at=model.finished_at,
         duration_ms=model.duration_ms,
@@ -451,6 +475,224 @@ def _tool_result_from_model(model: ToolResultMetadataModel) -> ToolResultMetadat
         content_type=model.content_type,
         size_bytes=model.size_bytes,
         schema_valid=model.schema_valid,
+        redacted_payload=model.redacted_payload,
+        truncated=model.truncated,
+        created_at=model.created_at,
+    )
+
+
+class SqlAlchemyRiskFlagRepository:
+    """Persist safe deterministic risk flags."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_for_tool_call(self, call_id: UUID) -> list[RiskFlag]:
+        statement = (
+            select(RiskFlagModel)
+            .where(RiskFlagModel.tool_call_id == call_id)
+            .order_by(RiskFlagModel.created_at, RiskFlagModel.code, RiskFlagModel.id)
+        )
+        return [_risk_flag_from_model(model) for model in await self._session.scalars(statement)]
+
+    async def create_many(self, flags: list[RiskFlag]) -> list[RiskFlag]:
+        models = [
+            RiskFlagModel(
+                id=flag.id,
+                tool_call_id=flag.tool_call_id,
+                code=flag.code.value,
+                severity=flag.severity.value,
+                message=flag.message,
+                safe_evidence=flag.safe_evidence,
+                source=flag.source.value,
+                created_at=flag.created_at,
+            )
+            for flag in flags
+        ]
+        self._session.add_all(models)
+        await self._session.flush()
+        return [_risk_flag_from_model(model) for model in models]
+
+
+class SqlAlchemyBlockingRuleRepository:
+    """Persist and resolve runtime rules."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_id(self, rule_id: UUID) -> BlockingRule | None:
+        model = await self._session.get(BlockingRuleModel, rule_id)
+        return _rule_from_model(model) if model is not None else None
+
+    async def list(
+        self,
+        *,
+        enabled: bool | None,
+        limit: int,
+        offset: int,
+    ) -> Page[BlockingRule]:
+        conditions: list[ColumnElement[bool]] = []
+        if enabled is not None:
+            conditions.append(BlockingRuleModel.enabled == enabled)
+        statement = select(BlockingRuleModel)
+        count_statement = select(func.count()).select_from(BlockingRuleModel)
+        if conditions:
+            statement = statement.where(*conditions)
+            count_statement = count_statement.where(*conditions)
+        statement = (
+            statement.order_by(
+                BlockingRuleModel.priority.desc(),
+                BlockingRuleModel.name,
+                BlockingRuleModel.id,
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        models = list((await self._session.scalars(statement)).all())
+        total = int((await self._session.scalar(count_statement)) or 0)
+        return Page([_rule_from_model(model) for model in models], total, limit, offset)
+
+    async def list_enabled(self) -> list_type[BlockingRule]:
+        page = await self.list(enabled=True, limit=10_000, offset=0)
+        return page.items
+
+    async def create(self, rule: BlockingRule) -> BlockingRule:
+        model = _rule_to_model(rule)
+        self._session.add(model)
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            raise RepositoryConflict(str(_constraint_name(exc) or "unknown_constraint")) from exc
+        return _rule_from_model(model)
+
+    async def update(self, rule: BlockingRule) -> BlockingRule:
+        model = await self._session.get(BlockingRuleModel, rule.id)
+        if model is None:
+            raise RuntimeError("blocking rule disappeared during update")
+        model.description = rule.description
+        model.enabled = rule.enabled
+        model.priority = rule.priority
+        model.action = rule.action.value
+        model.updated_at = rule.updated_at
+        await self._session.flush()
+        return _rule_from_model(model)
+
+
+class SqlAlchemyAuditEventRepository:
+    """Append-only audit-event repository."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list(
+        self,
+        *,
+        session_id: UUID | None,
+        tool_call_id: UUID | None,
+        event_type: AuditEventType | None,
+        limit: int,
+        offset: int,
+    ) -> Page[AuditEvent]:
+        conditions: list[ColumnElement[bool]] = []
+        if session_id is not None:
+            conditions.append(AuditEventModel.session_id == session_id)
+        if tool_call_id is not None:
+            conditions.append(AuditEventModel.tool_call_id == tool_call_id)
+        if event_type is not None:
+            conditions.append(AuditEventModel.event_type == event_type.value)
+        statement = select(AuditEventModel)
+        count_statement = select(func.count()).select_from(AuditEventModel)
+        if conditions:
+            statement = statement.where(*conditions)
+            count_statement = count_statement.where(*conditions)
+        statement = (
+            statement.order_by(AuditEventModel.created_at, AuditEventModel.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        models = list((await self._session.scalars(statement)).all())
+        total = int((await self._session.scalar(count_statement)) or 0)
+        return Page([_audit_from_model(model) for model in models], total, limit, offset)
+
+    async def create(self, event: AuditEvent) -> AuditEvent:
+        return (await self.create_many([event]))[0]
+
+    async def create_many(
+        self,
+        events: list_type[AuditEvent],
+    ) -> list_type[AuditEvent]:
+        models = [
+            AuditEventModel(
+                id=event.id,
+                session_id=event.session_id,
+                tool_call_id=event.tool_call_id,
+                event_type=event.event_type.value,
+                actor_type=event.actor_type,
+                actor_id=event.actor_id,
+                payload_redacted=event.payload_redacted,
+                trace_id=event.trace_id,
+                created_at=event.created_at,
+            )
+            for event in events
+        ]
+        self._session.add_all(models)
+        await self._session.flush()
+        return [_audit_from_model(model) for model in models]
+
+
+def _risk_flag_from_model(model: RiskFlagModel) -> RiskFlag:
+    return RiskFlag(
+        id=model.id,
+        tool_call_id=model.tool_call_id,
+        code=RiskFlagCode(model.code),
+        severity=RiskLevel(model.severity),
+        message=model.message,
+        safe_evidence=cast(JSONObject, model.safe_evidence),
+        source=RiskFlagSource(model.source),
+        created_at=model.created_at,
+    )
+
+
+def _rule_to_model(rule: BlockingRule) -> BlockingRuleModel:
+    return BlockingRuleModel(
+        id=rule.id,
+        name=rule.name,
+        description=rule.description,
+        enabled=rule.enabled,
+        priority=rule.priority,
+        tool_pattern=rule.tool_pattern,
+        conditions=rule.conditions,
+        action=rule.action.value,
+        created_at=rule.created_at,
+        updated_at=rule.updated_at,
+    )
+
+
+def _rule_from_model(model: BlockingRuleModel) -> BlockingRule:
+    return BlockingRule(
+        id=model.id,
+        name=model.name,
+        description=model.description,
+        enabled=model.enabled,
+        priority=model.priority,
+        tool_pattern=model.tool_pattern,
+        conditions=cast(JSONObject, model.conditions),
+        action=RuleAction(model.action),
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def _audit_from_model(model: AuditEventModel) -> AuditEvent:
+    return AuditEvent(
+        id=model.id,
+        session_id=model.session_id,
+        tool_call_id=model.tool_call_id,
+        event_type=AuditEventType(model.event_type),
+        actor_type=model.actor_type,
+        actor_id=model.actor_id,
+        payload_redacted=cast(JSONObject, model.payload_redacted),
+        trace_id=model.trace_id,
         created_at=model.created_at,
     )
 

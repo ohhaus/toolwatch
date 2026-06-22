@@ -1,24 +1,35 @@
-# Current Task: Tool Call Execution Pipeline v1
+# Current Task: Security Pipeline v1
 
-> Implementation status: implemented on 2026-06-22. The acceptance contract remains in
-> this file; verification details are reported by the completing agent.
+> Implementation status: implemented on 2026-06-22. This file remains the acceptance
+> contract; verification details are reported by the completing agent.
 
 ## Context
 
 The repository currently provides:
 
-* FastAPI application;
-* PostgreSQL and Alembic;
-* modular-monolith architecture;
 * Tool Registry;
-* Agent and Agent Session lifecycle;
-* repository ports and Unit of Work;
-* Docker Compose and CI;
-* unit and PostgreSQL integration tests.
+* Agent Sessions;
+* Tool Call execution pipeline;
+* trusted immutable mock-adapter registry;
+* JSON Schema validation;
+* canonical JSON and SHA-256 hashing;
+* idempotency;
+* PostgreSQL-safe sequence allocation;
+* payload-free ToolCall persistence;
+* safe lifecycle logging;
+* unit, API, integration, concurrency, and security tests.
 
-This milestone introduces the first executable ToolWatch flow.
+The current execution pipeline intentionally does not persist raw arguments or results because the redaction layer does not yet exist.
 
-The system must accept a tool-call request, validate it against a trusted registered tool, execute a trusted mock adapter, and persist the execution lifecycle.
+This milestone introduces:
+
+1. recursive deterministic redaction;
+2. sanitized argument and result persistence;
+3. risk classification;
+4. risk flags;
+5. runtime blocking rules;
+6. append-only audit events;
+7. persistent terminal-response replay.
 
 Read before changing code:
 
@@ -27,7 +38,8 @@ Read before changing code:
 3. `docs/architecture.md`
 4. `docs/threat-model.md`
 5. `docs/testing.md`
-6. existing domain, application, repository, API, and migration code
+6. all existing domain, application, security, persistence, API, and migration code
+7. ADR 0003
 
 Treat `AGENTS.md` and `docs/product-spec.md` as authoritative.
 
@@ -35,1260 +47,1417 @@ Treat `AGENTS.md` and `docs/product-spec.md` as authoritative.
 
 ## Goal
 
-Implement the first complete tool-call execution flow:
+Extend the execution pipeline to:
 
 ```text
-HTTP request
+Receive tool call
     ↓
-Resolve session
+Resolve session and trusted tool
     ↓
-Resolve registered tool and version
+Validate arguments
     ↓
-Validate arguments against JSON Schema
+Redact arguments
     ↓
-Resolve trusted adapter
+Classify risk
     ↓
-Create ToolCall record
+Evaluate blocking rules
     ↓
-Execute adapter with timeout
+BLOCK or EXECUTE
     ↓
-Validate adapter result
+Redact and validate result
     ↓
-Persist terminal status and safe metadata
+Persist sanitized payloads
     ↓
-Return result
+Persist risk flags and audit events
+    ↓
+Return sanitized result
 ```
 
-This milestone must support three deterministic mock tools:
+After this milestone, ToolWatch must be able to demonstrate:
 
-* `github.list_issues`;
-* `email.send`;
-* `database.query`.
-
-Do not implement Ollama integration yet.
-
----
-
-## Critical security boundary
-
-The full redaction engine is not implemented yet.
-
-Therefore:
-
-* do not persist raw tool arguments;
-* do not persist raw tool results;
-* do not log raw arguments or results;
-* do not attach raw arguments or results to traces;
-* do not include arguments or results in exception messages;
-* persist only canonical hashes and safe metadata;
-* return the result to the direct caller only after output validation;
-* tests must verify absence of raw payloads from persistence and logs.
-
-Argument and result persistence will be introduced only after the redaction milestone.
+* a normal read operation succeeding;
+* an email operation being flagged;
+* a destructive SQL request being blocked;
+* a secret being removed before persistence;
+* an indirect prompt-injection string in tool output being flagged;
+* an idempotent successful response being replayed after application restart.
 
 ---
 
-## Required domain concepts
+## Non-negotiable security invariants
 
-Add framework-independent domain models for:
+1. Raw arguments must never be persisted.
+2. Raw results must never be persisted.
+3. Raw secrets must never appear in:
 
-* `ToolCall`;
-* `ToolResultMetadata`;
-* `ToolCallStatus`;
-* `ToolCallDecision`;
-* adapter execution result;
-* stable execution errors.
-
-Do not use SQLAlchemy models as domain entities.
+   * PostgreSQL;
+   * logs;
+   * exceptions;
+   * API read endpoints;
+   * audit events.
+4. Redaction must run before persistence, logging, audit recording, or rendering.
+5. Risk and blocking decisions must be deterministic.
+6. An LLM must not participate in allow, flag, or block decisions.
+7. A matching block rule must prevent adapter execution.
+8. Unknown or disabled tools must still never execute.
+9. Sanitized payloads must preserve useful structure without retaining secrets.
+10. Public error responses must remain sanitized.
 
 ---
 
-## ToolCall domain model
+## Scope
 
-Fields:
+### Must implement
+
+* recursive redaction engine;
+* secret detection;
+* sanitized payload persistence;
+* risk levels;
+* risk flags;
+* deterministic risk classifier;
+* deterministic blocking rules;
+* audit-event persistence;
+* blocked ToolCall lifecycle;
+* persistent response replay;
+* rule management API;
+* security tests;
+* documentation and threat-model updates.
+
+### Must not implement
+
+* Ollama integration;
+* MCP;
+* authentication;
+* users or tenants;
+* human approvals;
+* external policy engines;
+* OPA, Cedar, or OpenFGA;
+* ML anomaly detection;
+* real GitHub, email, or database integrations;
+* background recovery worker;
+* complete OpenTelemetry GenAI instrumentation;
+* dashboard.
+
+---
+
+## Domain additions
+
+Add framework-independent domain concepts:
+
+* `RiskLevel`;
+* `RiskFlag`;
+* `RiskFlagCode`;
+* `RuleAction`;
+* `BlockingRule`;
+* `RuleMatch`;
+* `RuleEvaluation`;
+* `RedactionResult`;
+* `RedactionFinding`;
+* `AuditEvent`;
+* `AuditEventType`.
+
+Domain code must remain independent of FastAPI, SQLAlchemy, and telemetry SDKs.
+
+---
+
+## Risk levels
+
+Define ordered levels:
 
 ```text
-id
-session_id
-tool_definition_id
-parent_call_id
-sequence_number
-arguments_hash
-request_hash
-idempotency_key
-status
+low
+medium
+high
+critical
+```
+
+Ordering:
+
+```text
+low < medium < high < critical
+```
+
+A higher discovered risk may raise the effective risk level.
+
+No detector or rule may lower the registered tool’s `base_risk_level`.
+
+Example:
+
+```text
+registered base risk: medium
+secret detected: high
+effective risk: high
+```
+
+---
+
+## Rule actions
+
+Supported actions:
+
+```text
+allow
+flag
+block
+```
+
+Precedence:
+
+```text
+block > flag > allow
+```
+
+Rules must not lower risk.
+
+A block decision is terminal for rule evaluation.
+
+---
+
+## ToolCall changes
+
+Extend ToolCall with:
+
+```text
+risk_level
 decision
-started_at
-finished_at
-duration_ms
-error_code
-error_message_safe
-created_at
-updated_at
+matched_rule_ids
+redacted_arguments
 ```
 
-### Status values
+Allowed decisions:
+
+```text
+allow
+flag
+block
+reject
+```
+
+Extend statuses:
 
 ```text
 received
 validating
 rejected
+evaluating
+blocked
 executing
 succeeded
 failed
 timed_out
 ```
 
-### Decision values
-
-```text
-allow
-reject
-```
-
-Blocking policies are not implemented yet.
-
-### Allowed transitions
+Required paths:
 
 ```text
 received → validating → rejected
-received → validating → executing → succeeded
-received → validating → executing → failed
-received → validating → executing → timed_out
+
+received → validating → evaluating → blocked
+
+received → validating → evaluating → executing → succeeded
+
+received → validating → evaluating → executing → failed
+
+received → validating → evaluating → executing → timed_out
 ```
 
-Invalid transitions must raise a domain error.
+`blocked` is terminal.
 
-Terminal states:
-
-```text
-rejected
-succeeded
-failed
-timed_out
-```
-
-A terminal ToolCall cannot transition again.
+A blocked call must not invoke the adapter.
 
 ---
 
-## ToolResultMetadata domain model
+## Tool result changes
 
-Persist only:
+Replace or extend `ToolResultMetadata` to support:
 
 ```text
-id
 tool_call_id
+redacted_payload
 payload_hash
 content_type
 size_bytes
 schema_valid
+truncated
 created_at
 ```
 
-Do not persist the result body in this milestone.
+Requirements:
+
+* store only sanitized output;
+* retain the existing hash of the original canonical output where safe;
+* never persist original output;
+* enforce result-size limits before and after redaction;
+* API replay must use the persisted redacted payload;
+* read endpoints must return only redacted content.
+
+If the result is too large:
+
+* do not persist the full result;
+* return the established safe error;
+* mark execution failed.
+
+Do not silently truncate API execution results unless the product specification explicitly requires truncation.
 
 ---
 
-## API
+# Part 1: Redaction engine
 
-### Execute tool call
+## Redaction API
 
-```http
-POST /api/v1/tool-calls
+Implement a framework-independent service similar to:
+
+```python
+class Redactor(Protocol):
+    def redact(self, value: JSONValue) -> RedactionResult:
+        ...
 ```
 
-Required header:
+Example result:
 
-```http
-Idempotency-Key: <UUID>
+```python
+@dataclass(frozen=True)
+class RedactionResult:
+    value: JSONValue
+    findings: tuple[RedactionFinding, ...]
 ```
 
-Request:
+A finding must contain only safe metadata:
+
+```text
+path
+detector
+category
+fingerprint
+```
+
+It must not contain the original secret.
+
+---
+
+## Sensitive field names
+
+Match keys case-insensitively.
+
+At minimum:
+
+```text
+password
+passwd
+passphrase
+secret
+token
+access_token
+refresh_token
+api_key
+apikey
+authorization
+proxy_authorization
+cookie
+set_cookie
+private_key
+client_secret
+credential
+credentials
+```
+
+Support common naming variants:
+
+```text
+apiKey
+accessToken
+clientSecret
+privateKey
+```
+
+Normalize names before matching.
+
+Do not redact every field merely containing the substring `key`, because fields such as `monkey`, `keyboard`, or `foreign_key` would produce excessive false positives.
+
+---
+
+## Value-pattern detection
+
+Detect at least:
+
+### Authorization values
+
+```text
+Bearer <value>
+Basic <value>
+```
+
+### JWT-like values
+
+Three base64url-like dot-separated segments.
+
+### Private keys
+
+Headers such as:
+
+```text
+-----BEGIN PRIVATE KEY-----
+-----BEGIN RSA PRIVATE KEY-----
+-----BEGIN OPENSSH PRIVATE KEY-----
+```
+
+### Credentials in URLs
+
+Example:
+
+```text
+https://username:password@example.com/path
+```
+
+Sanitized form must not retain the password.
+
+### Configurable secret patterns
+
+Provide configuration for additional patterns.
+
+Do not add vendor-specific patterns unless tested and documented.
+
+---
+
+## Replacement format
+
+Default replacement:
+
+```text
+[REDACTED]
+```
+
+Optional development-safe form:
+
+```text
+[REDACTED:<fingerprint-prefix>]
+```
+
+Do not expose the full fingerprint publicly.
+
+---
+
+## Secret fingerprints
+
+Use keyed HMAC-SHA256 rather than plain SHA-256:
+
+```text
+HMAC-SHA256(REDACTION_FINGERPRINT_KEY, secret)
+```
+
+Requirements:
+
+* key comes from environment configuration;
+* production-like startup must reject a missing or unsafe key when fingerprints are enabled;
+* fingerprinting may be disabled;
+* do not persist or log the key;
+* only a short prefix may appear in public sanitized data;
+* full fingerprint may be stored internally if necessary;
+* use constant-time comparison where fingerprints are compared.
+
+Python’s standard `hmac` module provides keyed hashing and `compare_digest` for constant-time comparison.
+
+---
+
+## Recursive processing
+
+Support:
+
+* dictionaries;
+* lists;
+* strings;
+* numbers;
+* booleans;
+* null.
+
+Requirements:
+
+* preserve object and array shape;
+* preserve non-sensitive values;
+* enforce maximum depth;
+* enforce maximum number of visited nodes;
+* avoid recursion exhaustion;
+* behave deterministically;
+* be idempotent.
+
+Required property:
+
+```text
+redact(redact(value)) == redact(value)
+```
+
+Do not attempt to process arbitrary Python objects.
+
+---
+
+## Partial-string redaction
+
+For strings containing an embedded secret, redact only the sensitive portion when safe.
+
+Example:
+
+Input:
+
+```text
+Authorization failed for Bearer abcdef123456
+```
+
+Output:
+
+```text
+Authorization failed for [REDACTED]
+```
+
+Do not return the original secret in finding metadata.
+
+---
+
+## Redaction order
+
+Redaction must occur:
+
+1. after structural request parsing;
+2. after argument schema validation;
+3. before logging arguments;
+4. before persisting arguments;
+5. before risk findings are persisted;
+6. after adapter output is received;
+7. before output logging, persistence, audit, tracing, or API replay storage.
+
+The adapter may receive the original validated arguments because it needs them to execute.
+
+No other downstream component should receive raw payloads unless explicitly required within the trusted execution boundary.
+
+---
+
+# Part 2: Risk engine
+
+## Inputs
+
+Risk evaluation may use:
+
+* registered base risk;
+* tool name;
+* adapter type;
+* validated arguments;
+* redaction findings;
+* payload size;
+* known operation semantics;
+* deterministic detectors.
+
+It must not use:
+
+* LLM output as authority;
+* probabilistic model inference;
+* user-controlled risk labels;
+* tool description as a trusted instruction.
+
+---
+
+## Required risk flags
+
+Implement stable codes at minimum:
+
+```text
+write_operation
+external_side_effect
+sensitive_input
+sensitive_output
+destructive_sql
+write_sql
+multiple_sql_statements
+possible_command_injection
+possible_path_traversal
+possible_ssrf_target
+possible_indirect_prompt_injection
+oversized_payload
+unknown_operation
+```
+
+Each flag contains:
+
+```text
+code
+severity
+message
+safe_evidence
+```
+
+`safe_evidence` must not include secrets or full payloads.
+
+Example:
 
 ```json
 {
-  "session_id": "ses_...",
-  "tool": "github.list_issues",
-  "tool_version": "1.0.0",
-  "arguments": {
-    "repository": "demo/backend",
-    "state": "open"
+  "code": "destructive_sql",
+  "severity": "critical",
+  "message": "The query contains a destructive SQL operation.",
+  "safe_evidence": {
+    "keyword": "DROP"
   }
 }
 ```
 
-Successful response:
+---
+
+## Tool-specific classification
+
+### `github.list_issues`
+
+Default:
 
 ```text
-200 OK
+risk: low
+decision: allow
 ```
+
+### `email.send`
+
+Default flags:
+
+```text
+write_operation
+external_side_effect
+```
+
+Effective risk:
+
+```text
+medium
+```
+
+If sensitive input appears in recipient, subject, or body:
+
+```text
+sensitive_input
+```
+
+Effective risk must become at least `high`.
+
+Do not block by default unless a configured rule matches.
+
+### `database.query`
+
+Classify deterministic SQL categories without executing SQL.
+
+At minimum detect:
+
+```text
+SELECT
+INSERT
+UPDATE
+DELETE
+DROP
+TRUNCATE
+ALTER
+CREATE
+GRANT
+REVOKE
+```
+
+Rules:
+
+* SELECT → low;
+* INSERT/UPDATE → high;
+* DELETE → high or critical;
+* DROP/TRUNCATE/ALTER → critical;
+* multiple statements → critical;
+* unknown operation → high.
+
+Do not build a full SQL parser unless an existing lightweight parser is justified.
+
+String matching must avoid obvious trivial bypasses involving casing and whitespace.
+
+Tests must cover comments and mixed casing where practical.
+
+---
+
+## Indirect prompt-injection detector
+
+Implement a conservative deterministic detector for tool output.
+
+Flag phrases and patterns such as:
+
+```text
+ignore previous instructions
+ignore all prior instructions
+reveal the system prompt
+send the secret
+read ~/.ssh
+upload credentials
+call another tool
+exfiltrate
+```
+
+The detector:
+
+* must only produce a flag;
+* must not claim to conclusively detect prompt injection;
+* must not modify tool output beyond normal redaction;
+* must not use an LLM;
+* must be documented as heuristic;
+* must not automatically block ordinary output unless a rule explicitly says so.
+
+Tool output can carry malicious instructions that influence a later agent turn, which OWASP identifies as indirect prompt injection and MCP tool poisoning.
+
+---
+
+# Part 3: Blocking rules
+
+## Rule source
+
+Support rules persisted in PostgreSQL.
+
+Optional YAML bootstrap rules may be supported, but PostgreSQL must remain the source of runtime truth.
+
+Do not implement a general-purpose DSL.
+
+---
+
+## BlockingRule fields
+
+```text
+id
+name
+description
+enabled
+priority
+tool_pattern
+conditions
+action
+created_at
+updated_at
+```
+
+`conditions` may use JSONB but must follow a tightly validated schema.
+
+---
+
+## Supported conditions
+
+Support only:
+
+```text
+tool_equals
+tool_matches
+risk_at_least
+has_flag
+argument_path_equals
+argument_path_matches
+result_has_flag
+```
+
+Do not support:
+
+* arbitrary Python expressions;
+* Jinja evaluation;
+* shell commands;
+* dynamic imports;
+* SQL fragments;
+* unrestricted recursive expressions.
+
+---
+
+## Rule example
+
+```json
+{
+  "name": "block-destructive-sql",
+  "description": "Block destructive database operations.",
+  "enabled": true,
+  "priority": 100,
+  "tool_pattern": "database.query",
+  "conditions": {
+    "has_flag": "destructive_sql"
+  },
+  "action": "block"
+}
+```
+
+---
+
+## Required default development rules
+
+Provide an explicit idempotent seed command for:
+
+### Block destructive SQL
+
+```text
+tool: database.query
+flag: destructive_sql
+action: block
+```
+
+### Block multiple SQL statements
+
+```text
+tool: database.query
+flag: multiple_sql_statements
+action: block
+```
+
+### Flag sensitive email
+
+```text
+tool: email.send
+flag: sensitive_input
+action: flag
+```
+
+### Flag suspicious tool output
+
+```text
+result flag: possible_indirect_prompt_injection
+action: flag
+```
+
+Result rules do not affect an already executed side effect. They annotate the terminal result.
+
+Document this limitation clearly.
+
+---
+
+## Evaluation order
+
+Before adapter execution:
+
+1. classify input risk;
+2. evaluate input rules;
+3. if block matches:
+
+   * persist blocked status;
+   * do not call adapter;
+   * create audit event;
+   * return safe block response.
+
+After adapter execution:
+
+1. redact result;
+2. classify output risk;
+3. evaluate result-oriented flag rules;
+4. persist flags and sanitized result;
+5. return sanitized result.
+
+No post-execution rule may retroactively claim it prevented an action.
+
+---
+
+## Rule-management API
+
+Implement:
+
+```http
+GET /api/v1/rules
+POST /api/v1/rules
+GET /api/v1/rules/{rule_id}
+PATCH /api/v1/rules/{rule_id}
+```
+
+MVP PATCH may modify only:
+
+```text
+enabled
+priority
+action
+description
+```
+
+Changing condition structure may require creating a new rule.
+
+Requirements:
+
+* validated request schema;
+* stable pagination;
+* deterministic ordering;
+* duplicate names return conflict;
+* invalid conditions return 422;
+* public response must not expose internal implementation details.
+
+Do not implement delete in this milestone.
+
+---
+
+# Part 4: Audit events
+
+## AuditEvent fields
+
+```text
+id
+session_id
+tool_call_id
+event_type
+actor_type
+actor_id
+payload_redacted
+trace_id
+created_at
+```
+
+Use JSONB for `payload_redacted`.
+
+No update or delete repository methods.
+
+---
+
+## Required event types
+
+```text
+session.started
+session.completed
+tool_call.received
+tool_call.validated
+tool_call.risk_classified
+tool_call.flagged
+tool_call.blocked
+tool_call.started
+tool_call.completed
+tool_call.failed
+tool_call.timed_out
+redaction.applied
+rule.matched
+```
+
+Do not create duplicate semantic events for retries or response replay.
+
+---
+
+## Audit payload restrictions
+
+Audit payload may include:
+
+```text
+tool name
+tool version
+status
+decision
+risk level
+flag codes
+rule IDs
+redaction count
+duration
+safe error code
+```
+
+It must not include:
+
+```text
+raw arguments
+raw result
+raw secret
+raw exception
+full prompt
+adapter credentials
+database URL
+```
+
+---
+
+## Audit API
+
+Implement read-only endpoints:
+
+```http
+GET /api/v1/audit-events
+GET /api/v1/sessions/{session_id}/audit-events
+GET /api/v1/tool-calls/{call_id}/audit-events
+```
+
+Support bounded pagination and event-type filtering.
+
+Do not expose update or delete endpoints.
+
+---
+
+# Part 5: Persistent idempotent replay
+
+The current in-memory terminal response cache must be replaced or complemented with PostgreSQL-backed replay.
+
+Requirements:
+
+* successful terminal sanitized result is persisted;
+* blocked terminal response is reconstructable;
+* rejected and failed terminal responses are reconstructable from safe metadata;
+* same idempotency key and same request hash returns the prior terminal response after process restart;
+* adapter must not execute again;
+* conflicting request hash still returns `idempotency_conflict`;
+* in-progress behavior remains fail-closed.
+
+Do not persist raw output to support replay.
+
+---
+
+# Database migration
+
+Create a migration after `0003`.
+
+Add or alter:
+
+```text
+tool_calls
+tool_result_metadata
+risk_flags
+blocking_rules
+audit_events
+```
+
+Possible changes:
+
+### `tool_calls`
+
+Add:
+
+```text
+risk_level
+matched_rule_ids
+redacted_arguments
+```
+
+### `tool_result_metadata`
+
+Add:
+
+```text
+redacted_payload
+truncated
+```
+
+### `risk_flags`
+
+Create table with:
+
+```text
+id
+tool_call_id
+code
+severity
+message
+safe_evidence
+source
+created_at
+```
+
+### `blocking_rules`
+
+Create table.
+
+### `audit_events`
+
+Create append-only table.
+
+Requirements:
+
+* JSONB where appropriate;
+* named constraints;
+* explicit foreign keys;
+* indexes for common read paths;
+* timezone-aware timestamps;
+* upgrade and downgrade support;
+* no raw-payload columns.
+
+Manually inspect the migration.
+
+---
+
+# API execution response changes
+
+Successful response may now include:
 
 ```json
 {
   "call_id": "call_...",
   "status": "succeeded",
   "decision": "allow",
-  "tool": "github.list_issues",
-  "tool_version": "1.0.0",
-  "duration_ms": 12,
+  "risk": "low",
+  "flags": [],
   "result": {
-    "issues": [
-      {
-        "number": 1,
-        "title": "Example issue",
-        "state": "open"
-      }
-    ]
+    "issues": []
   }
 }
 ```
 
-Invalid arguments:
+Flagged response:
+
+```json
+{
+  "call_id": "call_...",
+  "status": "succeeded",
+  "decision": "flag",
+  "risk": "high",
+  "flags": [
+    "sensitive_input"
+  ],
+  "result": {
+    "message_id": "msg_...",
+    "status": "accepted"
+  }
+}
+```
+
+Blocked response:
 
 ```text
-422 Unprocessable Entity
+403 Forbidden
 ```
 
 ```json
 {
+  "call_id": "call_...",
+  "status": "blocked",
+  "decision": "block",
+  "risk": "critical",
+  "flags": [
+    "destructive_sql"
+  ],
+  "matched_rules": [
+    "block-destructive-sql"
+  ],
   "error": {
-    "code": "invalid_tool_arguments",
-    "message": "Tool arguments do not match the registered schema.",
+    "code": "tool_call_blocked",
+    "message": "The tool call was blocked by a runtime safety rule.",
     "correlation_id": "..."
   }
 }
 ```
 
-Unknown tool:
-
-```text
-404 Not Found
-```
-
-Error code:
-
-```text
-tool_not_found
-```
-
-Disabled tool:
-
-```text
-409 Conflict
-```
-
-Error code:
-
-```text
-tool_disabled
-```
-
-Inactive or missing session:
-
-```text
-404 session_not_found
-409 session_not_active
-```
-
-Timeout:
-
-```text
-504 Gateway Timeout
-```
-
-Error code:
-
-```text
-tool_timeout
-```
-
-Adapter failure:
-
-```text
-502 Bad Gateway
-```
-
-Error code:
-
-```text
-tool_execution_failed
-```
-
-Invalid adapter result:
-
-```text
-502 Bad Gateway
-```
-
-Error code:
-
-```text
-invalid_tool_result
-```
-
-Idempotency conflict:
-
-```text
-409 Conflict
-```
-
-Error code:
-
-```text
-idempotency_conflict
-```
+Do not expose rule internals or sensitive evidence.
 
 ---
 
-## Read APIs
+# Configuration
 
-Implement:
+Add:
 
-```http
-GET /api/v1/tool-calls/{call_id}
-GET /api/v1/sessions/{session_id}/tool-calls
+```text
+REDACTION_ENABLED=true
+REDACTION_REPLACEMENT=[REDACTED]
+REDACTION_FINGERPRINTS_ENABLED=true
+REDACTION_FINGERPRINT_KEY=<development-value>
+MAX_REDACTION_DEPTH=20
+MAX_REDACTION_NODES=10000
+STORE_REDACTED_ARGUMENTS=true
+STORE_REDACTED_RESULTS=true
 ```
 
-The responses must not contain raw arguments or raw results.
+`.env.example` may contain an explicit development-only placeholder.
 
-Example detail:
-
-```json
-{
-  "id": "call_...",
-  "session_id": "ses_...",
-  "tool": "github.list_issues",
-  "tool_version": "1.0.0",
-  "sequence_number": 1,
-  "status": "succeeded",
-  "decision": "allow",
-  "duration_ms": 12,
-  "error": null,
-  "started_at": "...",
-  "finished_at": "..."
-}
-```
-
-Session call list requirements:
-
-* order by `sequence_number`;
-* bounded pagination;
-* optional status filter;
-* deterministic ordering.
+Document that production deployments need a strong independent key.
 
 ---
 
-## Argument validation
+# Required tests
 
-Replace or extend the current limited schema validator so registered schemas can validate actual arguments.
-
-Use a maintained JSON Schema implementation.
-
-Required behavior:
-
-1. validate the registered schema itself during tool registration;
-2. compile or construct the validator before execution;
-3. validate arguments before adapter invocation;
-4. collect deterministic validation errors;
-5. return only safe field paths and generic messages;
-6. do not expose Python exception details;
-7. do not modify input arguments.
-
-Use JSON Schema Draft 2020-12 unless the existing codebase has already committed to another explicit draft.
-
-### Supported subset
-
-For the MVP execution path, support at least:
-
-```text
-type
-properties
-required
-additionalProperties
-items
-enum
-const
-minLength
-maxLength
-minimum
-maximum
-pattern
-format
-```
-
-### Restrictions
-
-Reject or explicitly disable unsupported dangerous or overly complex features, including:
-
-```text
-remote $ref
-dynamicRef
-recursive external schema loading
-custom executable format callbacks
-```
-
-Local schema references may remain unsupported in this milestone.
-
-Document the supported subset.
-
-### Format validation
-
-Support at least:
-
-```text
-email
-uri
-uuid
-date-time
-```
-
-Format validation must be explicit and tested.
-
----
-
-## Canonicalization and hashing
-
-Create one deterministic canonical JSON serializer.
-
-Requirements:
-
-* stable key ordering;
-* UTF-8;
-* compact separators;
-* reject unsupported non-JSON values;
-* preserve array ordering;
-* distinguish numeric and string values correctly.
-
-Compute:
-
-```text
-arguments_hash = SHA-256(canonical arguments)
-request_hash = SHA-256(
-    session_id
-    + tool name
-    + tool version
-    + canonical arguments
-)
-```
-
-Do not use Python's built-in `hash()`.
-
-Raw arguments must not be persisted alongside the hash.
-
----
-
-## Idempotency
-
-Execution endpoints may produce side effects, so idempotency is required now.
-
-Behavior:
-
-### Same key and same request
-
-```text
-same Idempotency-Key
-same request_hash
-```
-
-Return the previous terminal response without executing the adapter again.
-
-### Same key and different request
-
-Return:
-
-```text
-409 idempotency_conflict
-```
-
-### Concurrent same request
-
-Two concurrent requests with the same key and hash must execute the adapter at most once.
-
-### In-progress duplicate
-
-Choose and document one behavior:
-
-* wait briefly for the original execution and return its terminal result; or
-* return `409 execution_in_progress`.
-
-Prefer the simpler deterministic implementation.
-
-### Database enforcement
-
-Add a named unique constraint for the idempotency key.
-
-Do not rely only on an application-level pre-check.
-
----
-
-## Adapter architecture
-
-Define a framework-independent adapter protocol.
-
-Suggested contract:
-
-```python
-class ToolAdapter(Protocol):
-    async def execute(
-        self,
-        *,
-        arguments: Mapping[str, JSONValue],
-        context: ToolExecutionContext,
-    ) -> JSONValue:
-        ...
-```
-
-Create a trusted adapter registry.
-
-Requirements:
-
-* adapters are registered explicitly in application startup or composition root;
-* adapter type comes from the trusted ToolDefinition;
-* no dynamic import paths from database values;
-* no `eval`;
-* no arbitrary module loading;
-* unknown adapter types fail safely;
-* agents cannot select an adapter independently of the registered tool;
-* adapter registry is immutable after startup where practical.
-
-Stable error:
-
-```text
-adapter_not_configured
-```
-
----
-
-## Mock adapters
-
-### 1. `github.list_issues`
-
-Adapter type:
-
-```text
-mock_github
-```
-
-Arguments:
-
-```json
-{
-  "repository": "demo/backend",
-  "state": "open"
-}
-```
-
-Rules:
-
-* repository must match `owner/name`;
-* state is `open` or `closed`;
-* returns deterministic fixture data;
-* no real GitHub request;
-* no network access.
-
-Suggested result:
-
-```json
-{
-  "issues": [
-    {
-      "number": 1,
-      "title": "Add health endpoint",
-      "state": "open"
-    },
-    {
-      "number": 2,
-      "title": "Improve test coverage",
-      "state": "open"
-    }
-  ]
-}
-```
-
-### 2. `email.send`
-
-Adapter type:
-
-```text
-mock_email
-```
-
-Arguments:
-
-```json
-{
-  "recipient": "user@example.com",
-  "subject": "Summary",
-  "body": "There are two open issues."
-}
-```
-
-Rules:
-
-* validate recipient format through schema;
-* do not send real email;
-* return a deterministic or safely generated message ID;
-* increment a test-visible execution counter;
-* support idempotency tests proving one side effect.
-
-Suggested result:
-
-```json
-{
-  "message_id": "msg_...",
-  "status": "accepted"
-}
-```
-
-### 3. `database.query`
-
-Adapter type:
-
-```text
-mock_database
-```
-
-Arguments:
-
-```json
-{
-  "query": "SELECT id, name FROM projects"
-}
-```
-
-For this milestone:
-
-* do not execute SQL;
-* accept only a small allowlisted set of exact demo queries;
-* reject any unknown query;
-* do not create a SQL parser;
-* do not connect to the ToolWatch database;
-* return deterministic fixture rows.
-
-Example allowlisted query:
-
-```text
-SELECT id, name FROM projects
-```
-
-Unknown query error:
-
-```text
-mock_query_not_supported
-```
-
-Destructive SQL blocking belongs to the later security milestone.
-
-However, mock execution must never run destructive SQL.
-
----
-
-## Timeouts
-
-Add configuration:
-
-```text
-DEFAULT_TOOL_TIMEOUT_SECONDS=10
-```
-
-Allow an optional safe per-tool timeout in trusted adapter configuration:
-
-```json
-{
-  "timeout_seconds": 3
-}
-```
-
-Requirements:
-
-* enforce an upper application limit;
-* timeout the adapter coroutine;
-* transition ToolCall to `timed_out`;
-* return stable `tool_timeout`;
-* do not leave the database transaction open during long adapter execution;
-* do not retry automatically in this milestone.
-
----
-
-## Transaction boundaries
-
-Do not hold a PostgreSQL transaction open while awaiting tool execution.
-
-Required high-level flow:
-
-### Transaction 1
-
-* resolve session;
-* resolve tool;
-* validate prerequisites;
-* create ToolCall as `received`;
-* commit.
-
-### Application execution
-
-* move to `validating`;
-* validate arguments;
-* if invalid, persist `rejected`;
-* otherwise move to `executing`;
-* execute adapter outside a DB transaction.
-
-### Transaction 2
-
-* persist result metadata;
-* transition to terminal state;
-* commit.
-
-Document crash-consistency limitations.
-
-Examples:
-
-* process crashes after adapter side effect but before terminal persistence;
-* timeout occurs while adapter cancellation is not respected.
-
-Do not solve distributed transactions in this milestone.
-
-Idempotency must reduce duplicate execution risk.
-
----
-
-## Database schema
-
-Create tables:
-
-```text
-tool_calls
-tool_result_metadata
-```
-
-### `tool_calls`
-
-Required constraints and indexes:
-
-* primary key;
-* foreign key to `agent_sessions`;
-* foreign key to `tool_definitions`;
-* optional self-reference for `parent_call_id`;
-* unique named constraint on `idempotency_key`;
-* unique named constraint on `(session_id, sequence_number)`;
-* indexes on:
-
-  * session ID;
-  * status;
-  * created time;
-  * tool definition ID;
-* timezone-aware timestamps;
-* bounded error-code and safe-message columns.
-
-### `tool_result_metadata`
-
-Requirements:
-
-* one-to-one with ToolCall;
-* unique foreign key;
-* payload hash;
-* size;
-* content type;
-* schema validity;
-* created time.
-
-Do not create argument or result JSONB columns yet.
-
-Create a reviewed Alembic migration after `0002`.
-
-Migration must upgrade and downgrade cleanly.
-
----
-
-## Sequence numbers
-
-Every ToolCall inside a session receives a monotonically increasing sequence number starting at 1.
-
-Concurrent calls must not receive the same number.
-
-Use a PostgreSQL-safe implementation.
-
-Do not calculate solely using:
-
-```text
-SELECT MAX(sequence_number) + 1
-```
-
-without appropriate locking or constraint-retry handling.
-
-Document the chosen approach.
-
----
-
-## Output validation
-
-When `output_schema` exists:
-
-* validate adapter output before returning it;
-* if invalid, do not return the invalid payload;
-* persist terminal `failed`;
-* use `invalid_tool_result`;
-* store only payload hash and safe metadata;
-* do not expose detailed adapter output in the error.
-
-When no output schema exists:
-
-* require output to remain JSON-compatible;
-* enforce result-size limits;
-* document that schema validation was skipped.
-
----
-
-## Payload limits
-
-Use or add settings:
-
-```text
-MAX_TOOL_ARGUMENTS_BYTES=65536
-MAX_TOOL_RESULT_BYTES=524288
-MAX_JSON_DEPTH=20
-MAX_STRING_LENGTH=51200
-```
-
-Requirements:
-
-* measure canonical serialized size;
-* reject oversized arguments before execution;
-* reject excessive depth;
-* reject strings over the configured maximum;
-* reject non-JSON-compatible values;
-* do not truncate arguments;
-* do not return oversized results;
-* mark execution failed with `tool_result_too_large`.
-
-Stable codes:
-
-```text
-tool_arguments_too_large
-tool_result_too_large
-tool_payload_too_deep
-```
-
----
-
-## Public error safety
-
-Map expected application errors to stable API responses.
-
-Required codes:
-
-```text
-session_not_found
-session_not_active
-tool_not_found
-tool_disabled
-invalid_tool_arguments
-adapter_not_configured
-tool_execution_failed
-tool_timeout
-invalid_tool_result
-tool_arguments_too_large
-tool_result_too_large
-tool_payload_too_deep
-idempotency_conflict
-execution_in_progress
-```
-
-Do not return:
-
-* raw validation exception;
-* adapter exception text;
-* SQLAlchemy exception text;
-* stack trace;
-* raw arguments;
-* raw results;
-* adapter configuration.
-
-Every public error includes:
-
-```text
-code
-message
-correlation_id
-```
-
----
-
-## Logging
-
-Add structured lifecycle logs using IDs only:
-
-```text
-tool_call_received
-tool_call_rejected
-tool_call_started
-tool_call_succeeded
-tool_call_failed
-tool_call_timed_out
-```
-
-Allowed structured fields:
-
-```text
-call_id
-session_id
-tool_name
-tool_version
-status
-duration_ms
-error_code
-correlation_id
-```
-
-Forbidden fields:
-
-```text
-arguments
-result
-raw exception
-adapter_config
-user_prompt
-```
-
-Tests must verify raw payloads do not appear in captured logs.
-
----
-
-## Metrics and tracing
-
-Do not implement full OpenTelemetry tool semantics in this milestone unless the existing architecture makes it trivial.
-
-Minimal optional instrumentation:
-
-```text
-tool_calls_total
-tool_call_duration_seconds
-```
-
-Allowed low-cardinality labels:
-
-```text
-tool_name
-status
-```
-
-Do not add session IDs, call IDs, repository names, or error messages as metric labels.
-
-Full observability belongs to a later milestone.
-
----
-
-## Seed command
-
-Add or complete an explicit idempotent development seed command for:
-
-```text
-github.list_issues
-email.send
-database.query
-```
-
-Requirements:
-
-* use application services;
-* do not run on API startup;
-* safe to execute repeatedly;
-* create or reuse tool versions;
-* schemas must match mock adapter contracts;
-* adapter types must match the trusted adapter registry.
-
-Suggested command:
-
-```bash
-make seed
-```
-
----
-
-## Required tests
-
-### Domain unit tests
+## Redaction unit tests
 
 Cover:
 
-* valid state transitions;
-* invalid state transitions;
-* terminal-state protection;
-* deterministic hashes;
-* canonical JSON behavior;
-* decision and status enums.
+* sensitive key;
+* camelCase sensitive key;
+* nested dictionary;
+* nested list;
+* bearer token;
+* JWT-like token;
+* private key;
+* credentials in URL;
+* embedded secret;
+* repeated secret fingerprint;
+* idempotency;
+* maximum depth;
+* maximum nodes;
+* non-sensitive similar field names;
+* empty values;
+* already-redacted values.
 
-### Schema-validation tests
+## Property-based tests
 
-Cover:
+Required properties:
 
-* valid arguments;
-* missing required field;
-* additional property rejection;
-* invalid format;
-* invalid enum;
-* nested object;
-* excessive depth;
-* oversized string;
-* unsupported schema feature.
+```text
+redact(redact(x)) == redact(x)
+```
 
-### Adapter unit tests
+```text
+known secret not in serialize(redact(x))
+```
 
-Cover each mock adapter:
+```text
+redaction preserves JSON compatibility
+```
 
-* deterministic success;
-* invalid or unsupported input;
-* no network access;
-* timeout simulation;
-* output JSON compatibility.
+```text
+redaction never increases nesting depth
+```
 
-### Application tests
-
-Cover:
-
-* successful execution;
-* inactive session;
-* unknown tool;
-* disabled tool;
-* invalid arguments;
-* missing adapter;
-* adapter failure;
-* timeout;
-* invalid result;
-* oversized arguments;
-* oversized result;
-* idempotent retry;
-* idempotency conflict.
-
-### API tests
+## Risk-engine tests
 
 Cover:
 
-* correct HTTP status codes;
-* stable error codes;
-* successful result response;
-* call detail without payload;
-* session call listing;
-* pagination;
-* sanitized errors.
+* base risk preserved;
+* sensitive input raises risk;
+* SELECT low;
+* UPDATE high;
+* DELETE high or critical;
+* DROP critical;
+* mixed case;
+* whitespace;
+* multiple statements;
+* prompt-injection heuristic;
+* unknown operation.
 
-### PostgreSQL integration tests
+## Rule-engine tests
 
-Use Testcontainers.
+Cover:
+
+* priority;
+* block precedence;
+* disabled rule ignored;
+* tool exact match;
+* tool pattern;
+* flag match;
+* risk threshold;
+* argument path;
+* malformed conditions;
+* deterministic result;
+* no arbitrary expression execution.
+
+## Execution tests
+
+Cover:
+
+* redacted arguments persisted;
+* redacted result persisted;
+* raw payload absent;
+* safe call allowed;
+* medium call flagged;
+* destructive SQL blocked;
+* blocked adapter not invoked;
+* suspicious output flagged;
+* result replay after creating a new application instance;
+* conflicting idempotency request still rejected.
+
+## Audit tests
+
+Cover:
+
+* expected lifecycle events;
+* blocked lifecycle;
+* failed lifecycle;
+* timeout lifecycle;
+* no duplicate events on response replay;
+* raw payload absent;
+* stable ordering;
+* pagination.
+
+## PostgreSQL integration tests
 
 Cover:
 
 * migration upgrade;
-* migration downgrade and upgrade;
-* foreign keys;
-* unique idempotency constraint;
-* unique sequence constraint;
-* one-to-one result metadata;
-* concurrent same-key execution;
-* concurrent session sequence allocation;
-* terminal persistence.
+* downgrade and upgrade;
+* JSONB persistence;
+* risk-flag foreign keys;
+* rule uniqueness;
+* audit-event indexes;
+* persistent replay;
+* concurrent same-key request;
+* blocked call state.
 
-### Security regression tests
+## Logging security tests
 
-At minimum:
+Inject a unique test secret and assert it is absent from:
 
-1. raw argument secret absent from DB;
-2. raw argument secret absent from logs;
-3. raw result secret absent from DB;
-4. raw result secret absent from logs;
-5. adapter configuration absent from public API;
-6. invalid arguments do not invoke adapter;
-7. disabled tool does not invoke adapter;
-8. duplicate idempotent request invokes adapter once;
-9. adapter exception text is sanitized;
-10. output-schema failure does not return invalid output.
+* captured logs;
+* public errors;
+* persisted arguments;
+* persisted results;
+* audit payloads;
+* risk evidence.
 
 ---
 
-## Fake execution counters
+# Performance requirements
 
-For deterministic side-effect testing, mock adapters may expose test-only counters through injected test doubles.
+Redaction and rule evaluation run in the request path.
 
-Do not expose execution counters through production HTTP endpoints.
+Local engineering targets:
 
-Do not use global mutable counters in production composition.
+```text
+redaction of 64 KB JSON: p95 < 15 ms
+risk classification: p95 < 10 ms
+rule evaluation for 100 rules: p95 < 10 ms
+```
 
----
+These are benchmark targets, not production SLAs.
 
-## OpenAPI
-
-Document:
-
-* `Idempotency-Key` header;
-* request schema;
-* successful response;
-* all stable errors;
-* timeout response;
-* pagination;
-* result as JSON-compatible value.
-
-Do not expose persistence-only fields.
+Add benchmarks, but do not make unstable microbenchmarks block CI unless the repository already has a stable strategy.
 
 ---
 
-## Documentation updates
+# Documentation updates
 
-### `README.md`
+## README
 
 Add:
 
-* execution pipeline overview;
-* seed command;
-* curl example for each mock tool;
-* idempotency example;
-* explicit warning that content is not persisted until redaction exists;
-* note that Ollama is not connected yet.
+* redaction example;
+* allowed, flagged, and blocked examples;
+* rule seed command;
+* audit API examples;
+* persistent replay explanation;
+* warning that heuristic prompt-injection detection is not a guarantee.
 
-### `docs/architecture.md`
-
-Document:
-
-* adapter protocol and registry;
-* execution flow;
-* transaction boundaries;
-* idempotency;
-* sequence-number allocation;
-* crash-consistency limitations.
-
-### `docs/threat-model.md`
-
-Add or refine:
-
-* arbitrary adapter loading;
-* invalid argument execution;
-* duplicate side effects;
-* timeout and cancellation;
-* malicious adapter output;
-* schema complexity abuse;
-* payload exhaustion;
-* raw payload leakage;
-* process crash between side effect and persistence.
-
-### `docs/testing.md`
+## Architecture
 
 Document:
 
-* adapter tests;
-* idempotency/concurrency tests;
-* schema validation tests;
-* payload non-persistence tests.
+* raw trusted execution boundary;
+* redaction boundary;
+* risk-classification pipeline;
+* pre-execution and post-execution rules;
+* audit-event flow;
+* persistent replay.
 
-Add ADRs for durable choices such as:
+## Threat model
 
-```text
-trusted static adapter registry
-no payload persistence before redaction
-execution outside DB transaction
-```
+Add:
+
+* secret leakage;
+* redaction bypass;
+* regex denial of service;
+* misleading risk evidence;
+* rule poisoning;
+* rule precedence errors;
+* malicious tool output;
+* indirect prompt injection;
+* audit-log manipulation;
+* sensitive data in observability attributes.
+
+## Testing
+
+Document:
+
+* property-based redaction tests;
+* rule-engine tests;
+* audit-event tests;
+* persistent replay tests.
+
+## ADR
+
+Create ADRs for:
+
+1. deterministic security decisions;
+2. sanitized payload persistence;
+3. HMAC-based secret fingerprints;
+4. pre-execution versus post-execution rules.
+
+Combine closely related decisions if appropriate.
 
 ---
 
-## Non-goals
+# Non-goals
 
 Do not implement:
 
-* full secret redaction;
-* risk classification;
-* allow/flag/block policies;
-* audit-event table;
-* complete OpenTelemetry GenAI spans;
-* dashboard;
-* Ollama provider;
+* Ollama;
+* model prompts;
 * agent loop;
 * MCP;
+* OpenTelemetry GenAI spans;
+* approval workflows;
 * authentication;
-* real GitHub;
-* real email;
-* real SQL execution;
-* arbitrary HTTP adapters;
-* retries;
-* background queues.
+* external policy engine;
+* real tools;
+* arbitrary network access;
+* anomaly ML;
+* recovery worker;
+* retry queue.
 
 ---
 
-## Acceptance criteria
+# Acceptance criteria
 
 The milestone is complete only when:
 
-1. ToolCall and ToolResultMetadata domain models exist.
-2. Domain code remains framework-independent.
-3. `POST /api/v1/tool-calls` works for trusted mock adapters.
-4. Arguments are validated against the registered schema.
-5. Adapter output is validated when output schema exists.
-6. Unknown and disabled tools never execute.
-7. Inactive sessions cannot execute tools.
-8. Adapters are resolved only from a static trusted registry.
-9. No dynamic imports or arbitrary adapter paths exist.
-10. Raw arguments are not persisted.
-11. Raw results are not persisted.
-12. Raw arguments and results do not appear in logs.
-13. Idempotent duplicate requests execute the adapter once.
-14. Conflicting idempotency reuse returns HTTP 409.
-15. Timeouts produce a terminal timed-out call.
-16. Invalid adapter outputs are not returned.
-17. Payload limits are enforced.
-18. Sequence numbers remain unique under concurrency.
-19. Migration upgrades and downgrades successfully.
-20. Unit, API, integration, concurrency, and security tests pass.
-21. `make check` passes.
-22. Docker Compose remains healthy.
-23. Existing registry, session, and health behavior remains unchanged.
-24. Documentation and threat model are updated.
-25. Ollama and real external tools are not integrated.
+1. Recursive deterministic redaction exists.
+2. Raw secrets never enter persisted sanitized payloads.
+3. Raw arguments and results remain absent from logs.
+4. Redacted arguments and results are stored.
+5. Successful responses can be replayed after application restart.
+6. Risk levels and risk flags are persisted.
+7. Risk cannot be lowered below registered base risk.
+8. Blocking rules are deterministic.
+9. Destructive SQL is blocked before adapter execution.
+10. Sensitive email calls are flagged.
+11. Suspicious tool output is flagged.
+12. Blocked adapters are never invoked.
+13. Audit events cover the complete lifecycle.
+14. Audit events expose no raw payloads.
+15. Rule-management API works.
+16. Audit read APIs work.
+17. Migrations upgrade and downgrade successfully.
+18. Unit, property, API, integration, concurrency, and security tests pass.
+19. `make check` passes.
+20. Docker Compose remains healthy.
+21. Existing health, registry, session, and execution behavior remains compatible.
+22. Documentation and threat model are updated.
+23. Ollama and real external tools remain unimplemented.
 
 ---
 
-## Required implementation process
+# Required implementation process
 
 Before coding:
 
-1. inspect the repository, migrations, UoW, and existing error handling;
-2. summarize the proposed execution pipeline;
-3. describe transaction boundaries;
-4. describe idempotency behavior;
-5. describe adapter registration;
-6. identify security-sensitive storage and logging paths;
-7. proceed without waiting unless genuinely blocked.
+1. inspect the execution pipeline and persistence boundaries;
+2. inspect every logging and error path;
+3. summarize the proposed redaction algorithm;
+4. summarize fingerprint-key handling;
+5. summarize risk detectors;
+6. summarize rule evaluation and precedence;
+7. summarize audit-event transaction behavior;
+8. summarize persistent replay design;
+9. identify compatibility changes to existing APIs;
+10. proceed without waiting unless genuinely blocked.
 
 During implementation:
 
-1. work in small coherent stages;
-2. create domain state transitions first;
-3. implement canonicalization and schema validation;
-4. implement adapter protocol and mocks;
-5. add persistence and migration;
-6. implement application orchestration;
-7. implement API last;
-8. add tests at each stage;
-9. never persist payloads for debugging;
-10. do not implement future milestones.
+1. implement redaction and tests first;
+2. implement risk classification;
+3. implement rule domain and evaluator;
+4. add persistence migration;
+5. integrate pre-execution rules;
+6. integrate output redaction and post-execution flags;
+7. add audit events;
+8. implement persistent replay;
+9. add APIs last;
+10. never retain raw payloads for debugging.
 
 Before completion:
 
-1. run focused tests;
-2. run PostgreSQL integration and concurrency tests;
-3. test migration upgrade/downgrade/upgrade;
-4. run `alembic check`;
-5. run `make check`;
-6. run Docker Compose smoke tests;
-7. inspect logs for test secrets;
-8. inspect database rows for payload leakage;
+1. run focused tests after each stage;
+2. run property-based tests;
+3. run PostgreSQL integration tests;
+4. test migration upgrade/downgrade/upgrade;
+5. run `alembic check`;
+6. run `make check`;
+7. run Docker Compose smoke tests;
+8. inject a unique test secret and search:
+
+   * database rows;
+   * logs;
+   * API output;
+   * audit events;
 9. inspect Git diff;
 10. report:
 
 * created and modified files;
 * migration details;
-* execution pipeline;
-* adapter design;
-* transaction and idempotency decisions;
+* redaction design;
+* risk and rule behavior;
+* audit design;
+* replay behavior;
 * commands executed;
 * test results;
-* checks not run;
+* unverified checks;
 * remaining risks.
 
-Do not claim a check passed unless it was actually executed.
+Do not claim a check passed unless it actually ran successfully.

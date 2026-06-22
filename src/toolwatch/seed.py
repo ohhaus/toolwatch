@@ -3,8 +3,13 @@
 import asyncio
 from functools import partial
 
-from toolwatch.application.errors import ToolVersionAlreadyExists
+from toolwatch.application.errors import (
+    BlockingRuleAlreadyExists,
+    ToolVersionAlreadyExists,
+)
+from toolwatch.application.rules import RuleService
 from toolwatch.application.tools import ToolService
+from toolwatch.domain.security import BlockingRule, RuleAction
 from toolwatch.domain.tools import RiskLevel, ToolDefinition
 from toolwatch.infrastructure.database.engine import (
     dispose_engine,
@@ -93,7 +98,7 @@ def seed_tools() -> list[ToolDefinition]:
                 "properties": {
                     "query": {
                         "type": "string",
-                        "const": "SELECT id, name FROM projects",
+                        "minLength": 1,
                     }
                 },
                 "required": ["query"],
@@ -125,6 +130,49 @@ def seed_tools() -> list[ToolDefinition]:
     ]
 
 
+def seed_rules() -> list[BlockingRule]:
+    """Return reviewed deterministic development rules."""
+
+    return [
+        BlockingRule(
+            name="block-destructive-sql",
+            description="Block destructive database operations before adapter execution.",
+            enabled=True,
+            priority=100,
+            tool_pattern="database.query",
+            conditions={"has_flag": "destructive_sql"},
+            action=RuleAction.BLOCK,
+        ),
+        BlockingRule(
+            name="block-multiple-sql-statements",
+            description="Block multiple SQL statements before adapter execution.",
+            enabled=True,
+            priority=110,
+            tool_pattern="database.query",
+            conditions={"has_flag": "multiple_sql_statements"},
+            action=RuleAction.BLOCK,
+        ),
+        BlockingRule(
+            name="flag-sensitive-email",
+            description="Flag email calls containing sensitive input.",
+            enabled=True,
+            priority=50,
+            tool_pattern="email.send",
+            conditions={"has_flag": "sensitive_input"},
+            action=RuleAction.FLAG,
+        ),
+        BlockingRule(
+            name="flag-suspicious-tool-output",
+            description="Flag possible indirect prompt injection in tool output.",
+            enabled=True,
+            priority=50,
+            tool_pattern="*",
+            conditions={"result_has_flag": "possible_indirect_prompt_injection"},
+            action=RuleAction.FLAG,
+        ),
+    ]
+
+
 async def seed() -> None:
     """Register missing mock tools through the application service."""
 
@@ -133,6 +181,12 @@ async def seed() -> None:
         try:
             await service.register(tool)
         except ToolVersionAlreadyExists:
+            continue
+    rule_service = RuleService(partial(SqlAlchemyUnitOfWork, get_session_factory()))
+    for rule in seed_rules():
+        try:
+            await rule_service.create(rule)
+        except BlockingRuleAlreadyExists:
             continue
     await dispose_engine()
 

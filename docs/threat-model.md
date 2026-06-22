@@ -24,7 +24,13 @@ blocked or invalid calls must never reach downstream adapters.
 | Duplicate side effects | Concurrent retries send the same email twice | Unique idempotency key, canonical request hash, session lock, and fail-closed in-progress response |
 | Timeout without cancellation | Adapter ignores coroutine cancellation | Mark timed out, never retry automatically, and require trusted adapters; document cooperative cancellation |
 | Malicious adapter output | Output contains unexpected structure or instructions | Bound and validate output before return; persist only hash and safe metadata |
-| Raw execution payload leakage | Secret appears in arguments, result, logs, or rows | No payload columns; ID-only lifecycle logs; direct validated response only |
+| Raw execution payload leakage | Secret appears in arguments, result, logs, audit, or API reads | Bounded recursive redaction before persistence/rendering; sanitized-only payload columns; ID-only lifecycle logs |
+| Redaction bypass | Unusual key spelling or embedded credential avoids field matching | Normalize exact sensitive names, scan bounded value patterns, support configured patterns, and retain omission as the safe fallback |
+| Regex denial of service | A rule author submits catastrophic regular expressions | Bound regex length and reject backreferences, lookarounds, and nested quantifier constructs |
+| Misleading risk evidence | Evidence copies a secret or full SQL body | Persist stable codes and small allowlisted evidence such as the first SQL keyword |
+| Rule poisoning or precedence error | A low-priority allow weakens a destructive block | Validate a finite condition schema; deterministic ordering; `block > flag > allow`; risk never decreases |
+| Audit-log manipulation | Untrusted payload is copied into an audit event | Construct audit payloads from server-controlled IDs, enums, counts, codes, and redacted metadata only |
+| Sensitive observability attributes | Secret becomes a log or trace attribute | Keep lifecycle logs ID/status-only; full GenAI tracing remains out of scope |
 | Payload exhaustion | Deep or oversized JSON consumes memory or storage | Canonical byte, depth, and string limits before execution and before return |
 | Crash after side effect | Process exits before terminal state commits | Idempotency reduces replay risk; fail closed on unresolved keys; document lack of distributed transaction |
 
@@ -40,10 +46,11 @@ Real secrets must be supplied outside version control. The API image does not co
 and runs as a non-root user.
 
 Tool execution is limited to three trusted in-process mock adapters with no external
-network, email, or SQL effects. Full recursive redaction, risk evaluation, policy
-enforcement, audit events, LLM integration, and dashboard rendering are not present yet.
-Consequently raw argument and result bodies are deliberately not persisted at all.
+network, email, or SQL effects. Recursive redaction, deterministic risk/rules,
+sanitized-payload persistence, append-only application audit events, and durable replay
+are present. LLM integration, authentication, approvals, external policy engines, full
+OpenTelemetry GenAI instrumentation, and dashboard rendering are not present.
 
-Known execution limitations are process-local successful-response replay while result
-persistence is forbidden, cooperative timeout cancellation, and no automated recovery
-for calls left `executing` by a process crash.
+Known limitations include heuristic secret and prompt-injection detection, Python regex
+execution despite conservative pattern validation, cooperative timeout cancellation, and
+no automated recovery for calls left `executing` by a process crash.

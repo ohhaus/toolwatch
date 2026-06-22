@@ -14,9 +14,11 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from toolwatch.domain.common import JSONObject, JSONValue
 from toolwatch.infrastructure.database.base import Base
 
 
@@ -33,24 +35,27 @@ class ToolCallModel(Base):
         ),
         CheckConstraint(
             "status IN "
-            "('received', 'validating', 'rejected', 'executing', 'succeeded', 'failed', "
+            "('received', 'validating', 'rejected', 'evaluating', 'blocked', 'executing', "
+            "'succeeded', 'failed', "
             "'timed_out')",
             name="ck_tool_calls_status",
         ),
         CheckConstraint(
-            "decision IN ('allow', 'reject')",
+            "decision IN ('allow', 'flag', 'block', 'reject')",
             name="ck_tool_calls_decision",
         ),
         CheckConstraint("sequence_number > 0", name="ck_tool_calls_sequence_positive"),
         CheckConstraint(
-            "(status IN ('rejected', 'succeeded', 'failed', 'timed_out') "
+            "(status IN ('rejected', 'blocked', 'succeeded', 'failed', 'timed_out') "
             "AND finished_at IS NOT NULL) OR "
-            "(status IN ('received', 'validating', 'executing') AND finished_at IS NULL)",
+            "(status IN ('received', 'validating', 'evaluating', 'executing') "
+            "AND finished_at IS NULL)",
             name="ck_tool_calls_status_finished_at",
         ),
         CheckConstraint(
             "(status = 'rejected' AND decision = 'reject') OR "
-            "(status <> 'rejected' AND decision = 'allow')",
+            "(status = 'blocked' AND decision = 'block') OR "
+            "(status NOT IN ('rejected', 'blocked') AND decision IN ('allow', 'flag'))",
             name="ck_tool_calls_status_decision",
         ),
         CheckConstraint(
@@ -97,6 +102,9 @@ class ToolCallModel(Base):
     idempotency_key: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    matched_rule_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    redacted_arguments: Mapped[JSONObject] = mapped_column(JSONB, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -129,4 +137,6 @@ class ToolResultMetadataModel(Base):
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     schema_valid: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    redacted_payload: Mapped[JSONValue] = mapped_column(JSONB, nullable=False)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

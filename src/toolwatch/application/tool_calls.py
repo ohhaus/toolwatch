@@ -1,9 +1,9 @@
-"""Tool-call execution orchestration with payload-free persistence."""
+"""Deterministic redaction, risk, rule, audit, execution, and replay pipeline."""
 
 import asyncio
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 from toolwatch.application.errors import (
@@ -16,6 +16,7 @@ from toolwatch.application.errors import (
     SessionNotActive,
     SessionNotFound,
     ToolArgumentsTooLarge,
+    ToolCallBlocked,
     ToolCallNotFound,
     ToolDisabled,
     ToolExecutionFailed,
@@ -25,14 +26,21 @@ from toolwatch.application.errors import (
     ToolResultTooLarge,
     ToolTimeout,
 )
-from toolwatch.application.ports import Page, RepositoryConflict, UnitOfWorkFactory
+from toolwatch.application.ports import Page, RepositoryConflict, UnitOfWork, UnitOfWorkFactory
 from toolwatch.config import Settings
 from toolwatch.domain.common import JSONObject, JSONValue
+from toolwatch.domain.security import (
+    AuditEvent,
+    AuditEventType,
+    RiskFlag,
+    RuleAction,
+)
 from toolwatch.domain.sessions import SessionStatus
 from toolwatch.domain.tool_calls import (
     AdapterExecutionError,
     ToolAdapterRegistry,
     ToolCall,
+    ToolCallDecision,
     ToolCallStatus,
     ToolExecutionContext,
     ToolResultMetadata,
@@ -47,6 +55,9 @@ from toolwatch.security.payloads import (
     canonicalize_object,
     request_hash,
 )
+from toolwatch.security.redaction import DeterministicRedactor, RedactionLimitExceeded
+from toolwatch.security.risk import classify_input, classify_output
+from toolwatch.security.rules import evaluate_rules
 from toolwatch.security.schema import validate_instance
 
 logger = logging.getLogger("toolwatch.tool_calls")
@@ -68,20 +79,25 @@ class ExecuteToolCall:
 
 @dataclass(frozen=True, slots=True)
 class ToolCallExecution:
-    """Direct response containing transient validated output."""
+    """Sanitized terminal response, including persistent replay data."""
 
     call: ToolCall
     tool: ToolDefinition
-    result: JSONValue
+    result: JSONValue | None
+    flags: tuple[RiskFlag, ...] = ()
+    matched_rules: tuple[str, ...] = ()
     replayed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class ToolCallDetail:
-    """Payload-free read model."""
+    """Sanitized persisted call read model."""
 
     call: ToolCall
     tool: ToolDefinition
+    result: JSONValue | None
+    flags: tuple[RiskFlag, ...]
+    matched_rules: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,39 +110,49 @@ class ToolCallFilters:
 
 
 class TerminalResponseCache:
-    """Process-local replay cache required while result persistence is forbidden."""
-
-    def __init__(self) -> None:
-        self._items: dict[UUID, ToolCallExecution] = {}
+    """Compatibility shim; PostgreSQL is the terminal replay authority."""
 
     def get(self, idempotency_key: UUID) -> ToolCallExecution | None:
-        """Return a terminal response retained by this process."""
+        """Always defer replay to persisted sanitized state."""
 
-        return self._items.get(idempotency_key)
+        del idempotency_key
+        return None
 
     def put(self, idempotency_key: UUID, response: ToolCallExecution) -> None:
-        """Retain one validated terminal response without logging it."""
+        """Retain no process-local payload state."""
 
-        self._items[idempotency_key] = response
+        del idempotency_key, response
 
 
 class ToolCallService:
-    """Execute trusted adapters while keeping raw payloads out of persistence."""
+    """Execute trusted adapters through the Security Pipeline v1 boundary."""
 
     def __init__(
         self,
         uow_factory: UnitOfWorkFactory,
         adapters: ToolAdapterRegistry,
         settings: Settings,
-        response_cache: TerminalResponseCache,
+        response_cache: TerminalResponseCache | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._adapters = adapters
         self._settings = settings
         self._response_cache = response_cache
+        self._redactor = DeterministicRedactor(
+            replacement=settings.redaction_replacement,
+            fingerprint_key=(
+                settings.redaction_fingerprint_key
+                if settings.redaction_fingerprints_enabled
+                else None
+            ),
+            include_fingerprint_prefix=settings.redaction_include_fingerprint_prefix,
+            max_depth=settings.max_redaction_depth,
+            max_nodes=settings.max_redaction_nodes,
+            additional_patterns=settings.redaction_additional_patterns,
+        )
 
     async def execute(self, request: ExecuteToolCall) -> ToolCallExecution:
-        """Execute a validated trusted call with short database transactions."""
+        """Execute or persistently replay one validated trusted call."""
 
         arguments, canonical_arguments = self._canonical_arguments(request.arguments)
         canonical_request_hash = request_hash(
@@ -145,13 +171,51 @@ class ToolCallService:
             canonical_request_hash=canonical_request_hash,
         )
         self._log("tool_call_received", call, tool)
-        validating = await self._transition(call, ToolCallStatus.VALIDATING)
+        validating = await self._transition(
+            call,
+            ToolCallStatus.VALIDATING,
+            audit_type=None,
+        )
 
         if validate_instance(tool.input_schema, arguments):
             await self._reject(validating, tool, "invalid_tool_arguments")
             raise InvalidToolArguments
 
-        executing = await self._transition(validating, ToolCallStatus.EXECUTING)
+        try:
+            redacted_arguments = self._redactor.redact(arguments)
+        except RedactionLimitExceeded:
+            await self._reject(validating, tool, "tool_payload_too_deep")
+            raise ToolPayloadTooDeep from None
+        if not isinstance(redacted_arguments.value, dict):
+            await self._reject(validating, tool, "invalid_tool_arguments")
+            raise InvalidToolArguments
+
+        input_assessment = classify_input(tool, arguments, redacted_arguments.findings)
+        evaluating, input_flags, input_rule_names = await self._evaluate_input(
+            validating,
+            tool,
+            redacted_arguments=redacted_arguments.value,
+            redaction_count=len(redacted_arguments.findings),
+            risk_level=input_assessment.level,
+            flags=list(input_assessment.flags),
+        )
+        if evaluating.status is ToolCallStatus.BLOCKED:
+            outcome = ToolCallExecution(
+                call=evaluating,
+                tool=tool,
+                result=None,
+                flags=tuple(input_flags),
+                matched_rules=tuple(input_rule_names),
+            )
+            self._log("tool_call_blocked", evaluating, tool)
+            raise ToolCallBlocked(outcome)
+
+        executing = await self._transition(
+            evaluating,
+            ToolCallStatus.EXECUTING,
+            decision=evaluating.decision,
+            audit_type=AuditEventType.TOOL_CALL_STARTED,
+        )
         self._log("tool_call_started", executing, tool)
         adapter = self._adapters.get(tool.adapter_type)
         if adapter is None:
@@ -165,11 +229,10 @@ class ToolCallService:
             tool_version=tool.version,
             adapter_config=tool.adapter_config,
         )
-        timeout = self._timeout_for(tool)
         try:
             raw_result = await asyncio.wait_for(
                 adapter.execute(arguments=arguments, context=context),
-                timeout=timeout,
+                timeout=self._timeout_for(tool),
             )
         except TimeoutError:
             terminal = await self._transition(
@@ -177,6 +240,7 @@ class ToolCallService:
                 ToolCallStatus.TIMED_OUT,
                 error_code="tool_timeout",
                 error_message_safe="The trusted tool adapter timed out.",
+                audit_type=AuditEventType.TOOL_CALL_TIMED_OUT,
             )
             self._log("tool_call_timed_out", terminal, tool)
             raise ToolTimeout from None
@@ -193,40 +257,100 @@ class ToolCallService:
             raise ToolExecutionFailed from None
 
         canonical_result = await self._canonical_result(raw_result, executing, tool)
-        schema_valid = True
-        if tool.output_schema is not None:
-            schema_valid = not validate_instance(tool.output_schema, canonical_result.value)
-
-        metadata = ToolResultMetadata(
-            tool_call_id=executing.id,
-            payload_hash=canonical_result.sha256,
-            content_type="application/json",
-            size_bytes=canonical_result.size_bytes,
-            schema_valid=schema_valid,
+        try:
+            redacted_result = self._redactor.redact(canonical_result.value)
+        except RedactionLimitExceeded:
+            await self._fail(executing, tool, "tool_payload_too_deep")
+            raise ToolResultPayloadTooDeep from None
+        sanitized_result = self._canonical_sanitized_result(redacted_result.value)
+        output_assessment = classify_output(
+            sanitized_result.value,
+            redacted_result.findings,
+            executing.risk_level,
+        )
+        output_flags = list(output_assessment.flags)
+        schema_valid = tool.output_schema is None or not validate_instance(
+            tool.output_schema, canonical_result.value
         )
         if not schema_valid:
+            decision = ToolCallDecision.FLAG if output_flags else executing.decision
+            metadata = ToolResultMetadata(
+                tool_call_id=executing.id,
+                redacted_payload=None,
+                payload_hash=canonical_result.sha256,
+                content_type="application/json",
+                size_bytes=canonical_result.size_bytes,
+                schema_valid=False,
+            )
             terminal = await self._finalize(
                 executing,
                 ToolCallStatus.FAILED,
                 metadata=metadata,
+                flags=output_flags,
+                matched_rule_ids=executing.matched_rule_ids,
+                decision=decision,
+                risk_level=output_assessment.level,
+                redaction_count=len(redacted_result.findings),
                 error_code="invalid_tool_result",
                 error_message_safe="The trusted adapter returned an invalid result.",
             )
             self._log("tool_call_failed", terminal, tool)
             raise InvalidToolResult
 
+        async with self._uow_factory() as uow:
+            rules = await uow.rules.list_enabled()
+        result_evaluation = evaluate_rules(
+            rules,
+            tool_name=tool.name,
+            risk_level=output_assessment.level,
+            flags=output_flags,
+            arguments=executing.redacted_arguments,
+            result_phase=True,
+        )
+        all_flags = [*input_flags, *output_flags]
+        decision = executing.decision
+        if output_flags or result_evaluation.action is RuleAction.FLAG:
+            decision = ToolCallDecision.FLAG
+        matched_ids = tuple(
+            [*executing.matched_rule_ids, *(match.rule_id for match in result_evaluation.matches)]
+        )
+        matched_names = tuple(
+            [*input_rule_names, *(match.rule_name for match in result_evaluation.matches)]
+        )
+        metadata = ToolResultMetadata(
+            tool_call_id=executing.id,
+            redacted_payload=(
+                sanitized_result.value if self._settings.store_redacted_results else None
+            ),
+            payload_hash=canonical_result.sha256,
+            content_type="application/json",
+            size_bytes=canonical_result.size_bytes,
+            schema_valid=True,
+            truncated=False,
+        )
         terminal = await self._finalize(
             executing,
             ToolCallStatus.SUCCEEDED,
             metadata=metadata,
+            flags=output_flags,
+            matched_rule_ids=matched_ids,
+            decision=decision,
+            risk_level=output_assessment.level,
+            redaction_count=len(redacted_result.findings),
+            matched_rule_names=tuple(match.rule_name for match in result_evaluation.matches),
         )
-        response = ToolCallExecution(call=terminal, tool=tool, result=canonical_result.value)
-        self._response_cache.put(request.idempotency_key, response)
+        response = ToolCallExecution(
+            call=terminal,
+            tool=tool,
+            result=sanitized_result.value,
+            flags=tuple(all_flags),
+            matched_rules=matched_names,
+        )
         self._log("tool_call_succeeded", terminal, tool)
         return response
 
     async def get(self, call_id: UUID) -> ToolCallDetail:
-        """Return a payload-free call detail."""
+        """Return one sanitized persisted call."""
 
         async with self._uow_factory() as uow:
             call = await uow.tool_calls.get_by_id(call_id)
@@ -235,14 +359,23 @@ class ToolCallService:
             tool = await uow.tools.get_by_id(call.tool_definition_id)
             if tool is None:
                 raise ToolCallNotFound
-        return ToolCallDetail(call=call, tool=tool)
+            metadata = await uow.tool_results.get_by_tool_call_id(call.id)
+            flags = await uow.risk_flags.list_for_tool_call(call.id)
+            rule_names = await self._rule_names(uow, call.matched_rule_ids)
+        return ToolCallDetail(
+            call=call,
+            tool=tool,
+            result=metadata.redacted_payload if metadata is not None else None,
+            flags=tuple(flags),
+            matched_rules=rule_names,
+        )
 
     async def list_for_session(
         self,
         session_id: UUID,
         filters: ToolCallFilters,
     ) -> Page[ToolCallDetail]:
-        """List one session's calls by sequence number without payloads."""
+        """List one session's calls with sanitized payloads."""
 
         async with self._uow_factory() as uow:
             session = await uow.sessions.get_by_id(session_id)
@@ -259,7 +392,17 @@ class ToolCallService:
                 tool = await uow.tools.get_by_id(call.tool_definition_id)
                 if tool is None:
                     raise ToolCallNotFound
-                details.append(ToolCallDetail(call=call, tool=tool))
+                metadata = await uow.tool_results.get_by_tool_call_id(call.id)
+                flags = await uow.risk_flags.list_for_tool_call(call.id)
+                details.append(
+                    ToolCallDetail(
+                        call=call,
+                        tool=tool,
+                        result=metadata.redacted_payload if metadata is not None else None,
+                        flags=tuple(flags),
+                        matched_rules=await self._rule_names(uow, call.matched_rule_ids),
+                    )
+                )
         return Page(details, page.total, page.limit, page.offset)
 
     def _canonical_arguments(
@@ -275,9 +418,7 @@ class ToolCallService:
             )
         except PayloadTooDeep:
             raise ToolPayloadTooDeep from None
-        except PayloadTooLarge:
-            raise ToolArgumentsTooLarge from None
-        except PayloadStringTooLong:
+        except (PayloadTooLarge, PayloadStringTooLong):
             raise ToolArgumentsTooLarge from None
 
     async def _canonical_result(
@@ -303,6 +444,19 @@ class ToolCallService:
             await self._fail(call, tool, "invalid_tool_result")
             raise InvalidToolResult from None
 
+    def _canonical_sanitized_result(self, result: JSONValue) -> CanonicalPayload:
+        try:
+            return canonicalize_json(
+                result,
+                max_bytes=self._settings.max_tool_result_bytes,
+                max_depth=self._settings.max_json_depth,
+                max_string_length=self._settings.max_string_length,
+            )
+        except (PayloadTooLarge, PayloadStringTooLong):
+            raise ToolResultTooLarge from None
+        except PayloadTooDeep:
+            raise ToolResultPayloadTooDeep from None
+
     async def _existing_outcome(
         self,
         key: UUID,
@@ -310,19 +464,31 @@ class ToolCallService:
     ) -> ToolCallExecution | None:
         async with self._uow_factory() as uow:
             existing = await uow.tool_calls.get_by_idempotency_key(key)
-        if existing is None:
-            return None
-        if existing.request_hash != canonical_request_hash:
-            raise IdempotencyConflict
-        cached = self._response_cache.get(key)
-        if cached is not None:
-            return ToolCallExecution(
-                call=cached.call,
-                tool=cached.tool,
-                result=cached.result,
-                replayed=True,
-            )
-        if existing.status.terminal and existing.status is not ToolCallStatus.SUCCEEDED:
+            if existing is None:
+                return None
+            if existing.request_hash != canonical_request_hash:
+                raise IdempotencyConflict
+            tool = await uow.tools.get_by_id(existing.tool_definition_id)
+            if tool is None:
+                raise ToolCallNotFound
+            flags = tuple(await uow.risk_flags.list_for_tool_call(existing.id))
+            matched_rules = await self._rule_names(uow, existing.matched_rule_ids)
+            metadata = await uow.tool_results.get_by_tool_call_id(existing.id)
+        outcome = ToolCallExecution(
+            call=existing,
+            tool=tool,
+            result=metadata.redacted_payload if metadata is not None else None,
+            flags=flags,
+            matched_rules=matched_rules,
+            replayed=True,
+        )
+        if existing.status is ToolCallStatus.SUCCEEDED:
+            if metadata is None or metadata.truncated:
+                raise ExecutionInProgress
+            return outcome
+        if existing.status is ToolCallStatus.BLOCKED:
+            raise ToolCallBlocked(outcome)
+        if existing.status.terminal:
             self._raise_terminal_error(existing)
         raise ExecutionInProgress
 
@@ -339,10 +505,7 @@ class ToolCallService:
                 raise SessionNotFound
             if session.status is not SessionStatus.ACTIVE:
                 raise SessionNotActive
-            tool = await uow.tools.get_by_name_and_version(
-                request.tool_name,
-                request.tool_version,
-            )
+            tool = await uow.tools.get_by_name_and_version(request.tool_name, request.tool_version)
             if tool is None:
                 raise ToolNotFound
             if not tool.enabled:
@@ -352,18 +515,20 @@ class ToolCallService:
                 if existing.request_hash != canonical_request_hash:
                     raise IdempotencyConflict
                 raise ExecutionInProgress
-            sequence_number = await uow.tool_calls.next_sequence_number(session.id)
             call = ToolCall(
                 session_id=session.id,
                 tool_definition_id=tool.id,
                 parent_call_id=request.parent_call_id,
-                sequence_number=sequence_number,
+                sequence_number=await uow.tool_calls.next_sequence_number(session.id),
                 arguments_hash=arguments_hash,
                 request_hash=canonical_request_hash,
                 idempotency_key=request.idempotency_key,
             )
             try:
                 call = await uow.tool_calls.create(call)
+                await uow.audit_events.create(
+                    self._audit(call, tool, AuditEventType.TOOL_CALL_RECEIVED)
+                )
                 await uow.commit()
             except RepositoryConflict as exc:
                 if exc.constraint_name == IDEMPOTENCY_CONSTRAINT:
@@ -371,21 +536,113 @@ class ToolCallService:
                 raise
         return call, tool
 
+    async def _evaluate_input(
+        self,
+        call: ToolCall,
+        tool: ToolDefinition,
+        *,
+        redacted_arguments: JSONObject,
+        redaction_count: int,
+        risk_level: object,
+        flags: list[RiskFlag],
+    ) -> tuple[ToolCall, list[RiskFlag], list[str]]:
+        from toolwatch.domain.tools import RiskLevel
+
+        if not isinstance(risk_level, RiskLevel):
+            raise TypeError("risk_level must be RiskLevel")
+        async with self._uow_factory() as uow:
+            rules = await uow.rules.list_enabled()
+            evaluation = evaluate_rules(
+                rules,
+                tool_name=tool.name,
+                risk_level=risk_level,
+                flags=flags,
+                arguments=redacted_arguments,
+            )
+            decision = ToolCallDecision.ALLOW
+            if flags or evaluation.action is RuleAction.FLAG:
+                decision = ToolCallDecision.FLAG
+            evaluating = call.transition_to(
+                ToolCallStatus.EVALUATING,
+                decision=decision,
+                risk_level=risk_level,
+                matched_rule_ids=tuple(match.rule_id for match in evaluation.matches),
+            )
+            evaluating = replace(
+                evaluating,
+                redacted_arguments=(
+                    redacted_arguments if self._settings.store_redacted_arguments else {}
+                ),
+            )
+            evaluating = await uow.tool_calls.update(evaluating)
+            bound_flags = [flag.for_call(call.id) for flag in flags]
+            await uow.risk_flags.create_many(bound_flags)
+            events = [
+                self._audit(call, tool, AuditEventType.TOOL_CALL_VALIDATED),
+                self._audit(
+                    evaluating,
+                    tool,
+                    AuditEventType.REDACTION_APPLIED,
+                    {"redaction_count": redaction_count},
+                ),
+                self._audit(
+                    evaluating,
+                    tool,
+                    AuditEventType.TOOL_CALL_RISK_CLASSIFIED,
+                    {
+                        "risk_level": risk_level.value,
+                        "flag_codes": [flag.code.value for flag in flags],
+                    },
+                ),
+            ]
+            if flags or evaluation.action is RuleAction.FLAG:
+                events.append(self._audit(evaluating, tool, AuditEventType.TOOL_CALL_FLAGGED))
+            for match in evaluation.matches:
+                events.append(
+                    self._audit(
+                        evaluating,
+                        tool,
+                        AuditEventType.RULE_MATCHED,
+                        {"rule_id": str(match.rule_id), "action": match.action.value},
+                    )
+                )
+            if evaluation.action is RuleAction.BLOCK:
+                evaluating = evaluating.transition_to(
+                    ToolCallStatus.BLOCKED,
+                    decision=ToolCallDecision.BLOCK,
+                    matched_rule_ids=tuple(match.rule_id for match in evaluation.matches),
+                    error_code="tool_call_blocked",
+                    error_message_safe="The tool call was blocked by a runtime safety rule.",
+                )
+                evaluating = await uow.tool_calls.update(evaluating)
+                events.append(self._audit(evaluating, tool, AuditEventType.TOOL_CALL_BLOCKED))
+            await uow.audit_events.create_many(events)
+            await uow.commit()
+        return evaluating, bound_flags, [match.rule_name for match in evaluation.matches]
+
     async def _transition(
         self,
         call: ToolCall,
         status: ToolCallStatus,
         *,
+        decision: ToolCallDecision | None = None,
         error_code: str | None = None,
         error_message_safe: str | None = None,
+        audit_type: AuditEventType | None,
     ) -> ToolCall:
         changed = call.transition_to(
             status,
+            decision=decision,
             error_code=error_code,
             error_message_safe=error_message_safe,
         )
         async with self._uow_factory() as uow:
             changed = await uow.tool_calls.update(changed)
+            if audit_type is not None:
+                tool = await uow.tools.get_by_id(changed.tool_definition_id)
+                if tool is None:
+                    raise ToolCallNotFound
+                await uow.audit_events.create(self._audit(changed, tool, audit_type))
             await uow.commit()
         return changed
 
@@ -395,17 +652,67 @@ class ToolCallService:
         status: ToolCallStatus,
         *,
         metadata: ToolResultMetadata,
+        flags: list[RiskFlag],
+        matched_rule_ids: tuple[UUID, ...],
+        decision: ToolCallDecision | None = None,
+        risk_level: object | None = None,
+        redaction_count: int = 0,
+        matched_rule_names: tuple[str, ...] = (),
         error_code: str | None = None,
         error_message_safe: str | None = None,
     ) -> ToolCall:
+        from toolwatch.domain.tools import RiskLevel
+
+        next_risk = risk_level if isinstance(risk_level, RiskLevel) else call.risk_level
         terminal = call.transition_to(
             status,
+            decision=decision,
+            risk_level=next_risk,
+            matched_rule_ids=matched_rule_ids,
             error_code=error_code,
             error_message_safe=error_message_safe,
         )
         async with self._uow_factory() as uow:
             await uow.tool_results.create(metadata)
+            bound_flags = [flag.for_call(call.id) for flag in flags]
+            await uow.risk_flags.create_many(bound_flags)
             terminal = await uow.tool_calls.update(terminal)
+            tool = await uow.tools.get_by_id(call.tool_definition_id)
+            if tool is None:
+                raise ToolCallNotFound
+            events: list[AuditEvent] = []
+            if redaction_count:
+                events.append(
+                    self._audit(
+                        terminal,
+                        tool,
+                        AuditEventType.REDACTION_APPLIED,
+                        {"redaction_count": redaction_count},
+                    )
+                )
+            for name in matched_rule_names:
+                events.append(
+                    self._audit(
+                        terminal,
+                        tool,
+                        AuditEventType.RULE_MATCHED,
+                        {"rule_name": name, "action": "flag"},
+                    )
+                )
+            if flags or decision is ToolCallDecision.FLAG:
+                events.append(self._audit(terminal, tool, AuditEventType.TOOL_CALL_FLAGGED))
+            events.append(
+                self._audit(
+                    terminal,
+                    tool,
+                    (
+                        AuditEventType.TOOL_CALL_COMPLETED
+                        if status is ToolCallStatus.SUCCEEDED
+                        else AuditEventType.TOOL_CALL_FAILED
+                    ),
+                )
+            )
+            await uow.audit_events.create_many(events)
             await uow.commit()
         return terminal
 
@@ -415,6 +722,7 @@ class ToolCallService:
             ToolCallStatus.REJECTED,
             error_code=code,
             error_message_safe="Tool arguments do not match the registered schema.",
+            audit_type=AuditEventType.TOOL_CALL_FAILED,
         )
         self._log("tool_call_rejected", terminal, tool)
 
@@ -424,6 +732,7 @@ class ToolCallService:
             ToolCallStatus.FAILED,
             error_code=code,
             error_message_safe=SAFE_EXECUTION_ERROR,
+            audit_type=AuditEventType.TOOL_CALL_FAILED,
         )
         self._log("tool_call_failed", terminal, tool)
 
@@ -441,6 +750,18 @@ class ToolCallService:
         )
 
     @staticmethod
+    async def _rule_names(
+        uow: "UnitOfWork",
+        rule_ids: tuple[UUID, ...],
+    ) -> tuple[str, ...]:
+        names: list[str] = []
+        for rule_id in rule_ids:
+            rule = await uow.rules.get_by_id(rule_id)
+            if rule is not None:
+                names.append(rule.name)
+        return tuple(names)
+
+    @staticmethod
     def _raise_terminal_error(call: ToolCall) -> None:
         error_types = {
             "invalid_tool_arguments": InvalidToolArguments,
@@ -452,8 +773,32 @@ class ToolCallService:
             "tool_result_too_large": ToolResultTooLarge,
             "tool_payload_too_deep": ToolResultPayloadTooDeep,
         }
-        error_type = error_types.get(call.error_code or "", ToolExecutionFailed)
-        raise error_type
+        raise error_types.get(call.error_code or "", ToolExecutionFailed)
+
+    @staticmethod
+    def _audit(
+        call: ToolCall,
+        tool: ToolDefinition,
+        event_type: AuditEventType,
+        extra: JSONObject | None = None,
+    ) -> AuditEvent:
+        payload: JSONObject = {
+            "tool": tool.name,
+            "tool_version": tool.version,
+            "status": call.status.value,
+            "decision": call.decision.value,
+            "risk_level": call.risk_level.value,
+        }
+        if call.error_code is not None:
+            payload["error_code"] = call.error_code
+        if extra:
+            payload.update(extra)
+        return AuditEvent(
+            session_id=call.session_id,
+            tool_call_id=call.id,
+            event_type=event_type,
+            payload_redacted=payload,
+        )
 
     @staticmethod
     def _log(event: str, call: ToolCall, tool: ToolDefinition) -> None:

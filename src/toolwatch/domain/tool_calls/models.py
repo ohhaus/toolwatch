@@ -7,11 +7,16 @@ from uuid import UUID, uuid4
 
 from toolwatch.domain.common import (
     DomainValidationError,
+    JSONObject,
     JSONValue,
+    empty_json_object,
     require_non_empty,
     require_utc,
     utc_now,
+    validate_json_object,
+    validate_json_value,
 )
+from toolwatch.domain.tools import RiskLevel
 
 
 class ToolCallStatus(StrEnum):
@@ -20,6 +25,8 @@ class ToolCallStatus(StrEnum):
     RECEIVED = "received"
     VALIDATING = "validating"
     REJECTED = "rejected"
+    EVALUATING = "evaluating"
+    BLOCKED = "blocked"
     EXECUTING = "executing"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
@@ -31,6 +38,7 @@ class ToolCallStatus(StrEnum):
 
         return self in {
             ToolCallStatus.REJECTED,
+            ToolCallStatus.BLOCKED,
             ToolCallStatus.SUCCEEDED,
             ToolCallStatus.FAILED,
             ToolCallStatus.TIMED_OUT,
@@ -41,12 +49,15 @@ class ToolCallDecision(StrEnum):
     """Current deterministic execution decision."""
 
     ALLOW = "allow"
+    FLAG = "flag"
+    BLOCK = "block"
     REJECT = "reject"
 
 
 _ALLOWED_TRANSITIONS = {
     ToolCallStatus.RECEIVED: {ToolCallStatus.VALIDATING},
-    ToolCallStatus.VALIDATING: {ToolCallStatus.REJECTED, ToolCallStatus.EXECUTING},
+    ToolCallStatus.VALIDATING: {ToolCallStatus.REJECTED, ToolCallStatus.EVALUATING},
+    ToolCallStatus.EVALUATING: {ToolCallStatus.BLOCKED, ToolCallStatus.EXECUTING},
     ToolCallStatus.EXECUTING: {
         ToolCallStatus.SUCCEEDED,
         ToolCallStatus.FAILED,
@@ -68,6 +79,9 @@ class ToolCall:
     parent_call_id: UUID | None = None
     status: ToolCallStatus = ToolCallStatus.RECEIVED
     decision: ToolCallDecision = ToolCallDecision.ALLOW
+    risk_level: RiskLevel = RiskLevel.LOW
+    matched_rule_ids: tuple[UUID, ...] = ()
+    redacted_arguments: JSONObject = field(default_factory=empty_json_object)
     started_at: datetime | None = None
     finished_at: datetime | None = None
     duration_ms: int | None = None
@@ -98,6 +112,15 @@ class ToolCall:
             raise DomainValidationError("rejected calls require reject decision")
         if self.status is not ToolCallStatus.REJECTED and self.decision is ToolCallDecision.REJECT:
             raise DomainValidationError("reject decision is only valid for rejected calls")
+        if self.status is ToolCallStatus.BLOCKED and self.decision is not ToolCallDecision.BLOCK:
+            raise DomainValidationError("blocked calls require block decision")
+        if self.status is not ToolCallStatus.BLOCKED and self.decision is ToolCallDecision.BLOCK:
+            raise DomainValidationError("block decision is only valid for blocked calls")
+        object.__setattr__(
+            self,
+            "redacted_arguments",
+            validate_json_object(self.redacted_arguments, "redacted_arguments"),
+        )
         if self.error_code is not None:
             require_non_empty(self.error_code, "error_code")
         if self.error_message_safe is not None:
@@ -110,6 +133,9 @@ class ToolCall:
         now: datetime | None = None,
         error_code: str | None = None,
         error_message_safe: str | None = None,
+        decision: ToolCallDecision | None = None,
+        risk_level: RiskLevel | None = None,
+        matched_rule_ids: tuple[UUID, ...] | None = None,
     ) -> "ToolCall":
         """Apply one allowed lifecycle transition."""
 
@@ -129,13 +155,17 @@ class ToolCall:
         if finished_at is not None and started_at is not None:
             duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
 
-        decision = (
-            ToolCallDecision.REJECT if status is ToolCallStatus.REJECTED else ToolCallDecision.ALLOW
-        )
+        next_decision = decision or self.decision
+        if status is ToolCallStatus.REJECTED:
+            next_decision = ToolCallDecision.REJECT
+        elif status is ToolCallStatus.BLOCKED:
+            next_decision = ToolCallDecision.BLOCK
         return replace(
             self,
             status=status,
-            decision=decision,
+            decision=next_decision,
+            risk_level=risk_level or self.risk_level,
+            matched_rule_ids=matched_rule_ids or self.matched_rule_ids,
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
@@ -147,18 +177,29 @@ class ToolCall:
 
 @dataclass(frozen=True, slots=True)
 class ToolResultMetadata:
-    """Safe persisted facts about a tool result, excluding its body."""
+    """Safe persisted facts and sanitized payload for a tool result."""
 
     tool_call_id: UUID
+    redacted_payload: JSONValue
     payload_hash: str
     content_type: str
     size_bytes: int
     schema_valid: bool
+    truncated: bool = False
     id: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
         _require_sha256(self.payload_hash, "payload_hash")
+        object.__setattr__(
+            self,
+            "redacted_payload",
+            validate_json_value(
+                self.redacted_payload,
+                "redacted_payload",
+                max_depth=20,
+            ),
+        )
         require_non_empty(self.content_type, "content_type")
         if self.size_bytes < 0:
             raise DomainValidationError("size_bytes must not be negative")

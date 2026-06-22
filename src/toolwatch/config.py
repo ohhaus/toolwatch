@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from toolwatch import __version__
@@ -36,6 +36,41 @@ class Settings(BaseSettings):
     max_tool_result_bytes: int = Field(default=524_288, ge=1)
     max_json_depth: int = Field(default=20, ge=1, le=100)
     max_string_length: int = Field(default=51_200, ge=1)
+    redaction_enabled: bool = True
+    redaction_replacement: str = Field(default="[REDACTED]", min_length=1, max_length=100)
+    redaction_fingerprints_enabled: bool = True
+    redaction_fingerprint_key: str = Field(
+        default="development-only-redaction-key-change-me",
+        min_length=16,
+    )
+    redaction_include_fingerprint_prefix: bool = False
+    redaction_additional_patterns: tuple[str, ...] = ()
+    max_redaction_depth: int = Field(default=20, ge=1, le=100)
+    max_redaction_nodes: int = Field(default=10_000, ge=1, le=1_000_000)
+    store_redacted_arguments: bool = True
+    store_redacted_results: bool = True
+
+    @model_validator(mode="after")
+    def validate_redaction_key(self) -> "Settings":
+        """Reject unsafe production-like fingerprint configuration."""
+
+        if not self.redaction_enabled:
+            raise ValueError("Security Pipeline v1 requires redaction to remain enabled")
+        if not self.store_redacted_arguments or not self.store_redacted_results:
+            raise ValueError(
+                "Security Pipeline v1 requires sanitized payload persistence for replay"
+            )
+        if (
+            self.redaction_enabled
+            and self.redaction_fingerprints_enabled
+            and self.environment.lower() not in {"development", "test"}
+            and (
+                len(self.redaction_fingerprint_key) < 32
+                or "development" in self.redaction_fingerprint_key.lower()
+            )
+        ):
+            raise ValueError("production redaction fingerprints require a strong independent key")
+        return self
 
 
 @lru_cache(maxsize=1)
