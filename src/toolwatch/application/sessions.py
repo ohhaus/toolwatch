@@ -13,6 +13,7 @@ from toolwatch.domain.common import JSONObject, empty_json_object
 from toolwatch.domain.security import AuditEvent, AuditEventType
 from toolwatch.domain.sessions import AgentSession, SessionStatus
 from toolwatch.domain.sessions.models import InvalidSessionTransition
+from toolwatch.telemetry.context import current_correlation
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,8 @@ class SessionService:
                     session_id=session.id,
                     event_type=AuditEventType.SESSION_STARTED,
                     payload_redacted={"status": session.status.value},
+                    trace_id=current_correlation().trace_id,
+                    correlation_id=current_correlation().correlation_id,
                 )
             )
             await uow.commit()
@@ -129,6 +132,8 @@ class SessionService:
                         session_id=terminal.id,
                         event_type=AuditEventType.SESSION_COMPLETED,
                         payload_redacted={"status": terminal.status.value},
+                        trace_id=current_correlation().trace_id,
+                        correlation_id=current_correlation().correlation_id,
                     )
                 )
                 await uow.commit()

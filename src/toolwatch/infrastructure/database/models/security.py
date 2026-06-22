@@ -87,6 +87,8 @@ class AuditEventModel(Base):
         Index("ix_audit_events_session_id_created_at", "session_id", "created_at"),
         Index("ix_audit_events_tool_call_id_created_at", "tool_call_id", "created_at"),
         Index("ix_audit_events_event_type", "event_type"),
+        Index("ix_audit_events_trace_id", "trace_id"),
+        Index("ix_audit_events_correlation_id", "correlation_id"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -113,4 +115,5 @@ class AuditEventModel(Base):
     actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     payload_redacted: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
     trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

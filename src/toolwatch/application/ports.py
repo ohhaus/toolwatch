@@ -161,6 +161,8 @@ class AuditEventRepository(Protocol):
         session_id: UUID | None,
         tool_call_id: UUID | None,
         event_type: AuditEventType | None,
+        trace_id: str | None,
+        correlation_id: str | None,
         limit: int,
         offset: int,
     ) -> Page[AuditEvent]: ...

@@ -7,8 +7,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from toolwatch.api.dependencies import get_telemetry
 from toolwatch.infrastructure.database.engine import get_engine
 from toolwatch.infrastructure.database.health import is_database_available
+from toolwatch.telemetry import TelemetryRuntime
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -32,6 +34,14 @@ class NotReadyResponse(BaseModel):
 
     status: Literal["not_ready"] = "not_ready"
     database: Literal["unavailable"] = "unavailable"
+
+
+class TelemetryHealthResponse(BaseModel):
+    """Safe non-readiness telemetry state."""
+
+    status: Literal["ok", "degraded", "disabled"]
+    tracing: Literal["configured", "disabled"]
+    exporter: Literal["configured", "degraded", "disabled"]
 
 
 @router.get("/live", response_model=LivenessResponse)
@@ -58,4 +68,27 @@ async def readiness(
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content=response.model_dump(),
+    )
+
+
+@router.get("/telemetry", response_model=TelemetryHealthResponse)
+def telemetry_health(
+    runtime: Annotated[TelemetryRuntime, Depends(get_telemetry)],
+) -> TelemetryHealthResponse:
+    """Expose only coarse provider state; Jaeger does not gate readiness."""
+
+    exporter = runtime.exporter_status.value
+    if exporter == "disabled":
+        status_value = "disabled"
+        tracing = "disabled"
+    elif exporter == "degraded":
+        status_value = "degraded"
+        tracing = "configured"
+    else:
+        status_value = "ok"
+        tracing = "configured"
+    return TelemetryHealthResponse(
+        status=status_value,
+        tracing=tracing,
+        exporter=exporter,
     )

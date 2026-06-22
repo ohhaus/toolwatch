@@ -5,7 +5,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 from toolwatch.api.dependencies import get_uow_factory
 from toolwatch.api.errors import error_responses
@@ -26,6 +26,7 @@ class AuditEventResponse(BaseModel):
     actor_id: str | None
     payload: JSONObject
     trace_id: str | None
+    correlation_id: str | None
     created_at: datetime
 
 
@@ -37,16 +38,29 @@ class AuditEventListResponse(BaseModel):
 
 
 UowDependency = Annotated[UnitOfWorkFactory, Depends(get_uow_factory)]
+TraceIdQuery = Annotated[
+    str,
+    StringConstraints(pattern=r"^[0-9a-f]{32}$", min_length=32, max_length=32),
+]
 
 
 @router.get("/api/v1/audit-events", response_model=AuditEventListResponse)
 async def list_audit_events(
     uow_factory: UowDependency,
     event_type: Annotated[AuditEventType | None, Query()] = None,
+    trace_id: Annotated[TraceIdQuery | None, Query()] = None,
+    correlation_id: Annotated[UUID | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> AuditEventListResponse:
-    return await _list(uow_factory, event_type=event_type, limit=limit, offset=offset)
+    return await _list(
+        uow_factory,
+        event_type=event_type,
+        trace_id=trace_id,
+        correlation_id=correlation_id,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get(
@@ -58,6 +72,8 @@ async def list_session_audit_events(
     session_id: UUID,
     uow_factory: UowDependency,
     event_type: Annotated[AuditEventType | None, Query()] = None,
+    trace_id: Annotated[TraceIdQuery | None, Query()] = None,
+    correlation_id: Annotated[UUID | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> AuditEventListResponse:
@@ -65,6 +81,8 @@ async def list_session_audit_events(
         uow_factory,
         session_id=session_id,
         event_type=event_type,
+        trace_id=trace_id,
+        correlation_id=correlation_id,
         limit=limit,
         offset=offset,
     )
@@ -79,6 +97,8 @@ async def list_call_audit_events(
     call_id: UUID,
     uow_factory: UowDependency,
     event_type: Annotated[AuditEventType | None, Query()] = None,
+    trace_id: Annotated[TraceIdQuery | None, Query()] = None,
+    correlation_id: Annotated[UUID | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> AuditEventListResponse:
@@ -86,6 +106,8 @@ async def list_call_audit_events(
         uow_factory,
         tool_call_id=call_id,
         event_type=event_type,
+        trace_id=trace_id,
+        correlation_id=correlation_id,
         limit=limit,
         offset=offset,
     )
@@ -97,6 +119,8 @@ async def _list(
     session_id: UUID | None = None,
     tool_call_id: UUID | None = None,
     event_type: AuditEventType | None,
+    trace_id: str | None = None,
+    correlation_id: UUID | None = None,
     limit: int,
     offset: int,
 ) -> AuditEventListResponse:
@@ -105,6 +129,8 @@ async def _list(
             session_id=session_id,
             tool_call_id=tool_call_id,
             event_type=event_type,
+            trace_id=trace_id,
+            correlation_id=str(correlation_id) if correlation_id is not None else None,
             limit=limit,
             offset=offset,
         )
@@ -127,5 +153,6 @@ def _response(event: AuditEvent) -> AuditEventResponse:
         actor_id=event.actor_id,
         payload=event.payload_redacted,
         trace_id=event.trace_id,
+        correlation_id=event.correlation_id,
         created_at=event.created_at,
     )

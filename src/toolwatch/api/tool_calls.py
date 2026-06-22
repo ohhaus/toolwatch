@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Annotated
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query
 from fastapi.responses import JSONResponse
@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from toolwatch.api.dependencies import (
     get_adapter_registry,
+    get_telemetry,
     get_terminal_response_cache,
     get_uow_factory,
 )
@@ -29,6 +30,8 @@ from toolwatch.domain.common import JSONObject, JSONValue
 from toolwatch.domain.tool_calls import ToolCallDecision, ToolCallStatus
 from toolwatch.domain.tools import RiskLevel
 from toolwatch.infrastructure.adapters import AdapterRegistry
+from toolwatch.telemetry import TelemetryRuntime
+from toolwatch.telemetry.context import current_correlation
 
 router = APIRouter(tags=["tool-calls"])
 
@@ -102,6 +105,7 @@ UowDependency = Annotated[UnitOfWorkFactory, Depends(get_uow_factory)]
 AdapterDependency = Annotated[AdapterRegistry, Depends(get_adapter_registry)]
 CacheDependency = Annotated[TerminalResponseCache, Depends(get_terminal_response_cache)]
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
+TelemetryDependency = Annotated[TelemetryRuntime, Depends(get_telemetry)]
 
 
 @router.post(
@@ -121,11 +125,12 @@ async def execute_tool_call(
     adapters: AdapterDependency,
     cache: CacheDependency,
     settings: SettingsDependency,
+    telemetry: TelemetryDependency,
     idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
 ) -> ToolCallExecuteResponse | JSONResponse:
     """Execute a trusted adapter after deterministic security evaluation."""
 
-    service = ToolCallService(uow_factory, adapters, settings, cache)
+    service = ToolCallService(uow_factory, adapters, settings, cache, telemetry)
     try:
         execution = await service.execute(
             ExecuteToolCall(
@@ -152,7 +157,7 @@ async def execute_tool_call(
                 error=ErrorBody(
                     code=exc.code,
                     message="The tool call was blocked by a runtime safety rule.",
-                    correlation_id=str(uuid4()),
+                    correlation_id=current_correlation().correlation_id,
                 )
             ).model_dump()["error"],
         }
@@ -171,10 +176,11 @@ async def get_tool_call(
     adapters: AdapterDependency,
     cache: CacheDependency,
     settings: SettingsDependency,
+    telemetry: TelemetryDependency,
 ) -> ToolCallResponse:
     """Return one persisted call with sanitized payloads only."""
 
-    detail = await ToolCallService(uow_factory, adapters, settings, cache).get(call_id)
+    detail = await ToolCallService(uow_factory, adapters, settings, cache, telemetry).get(call_id)
     return _call_response(detail)
 
 
@@ -189,13 +195,15 @@ async def list_session_tool_calls(
     adapters: AdapterDependency,
     cache: CacheDependency,
     settings: SettingsDependency,
+    telemetry: TelemetryDependency,
     call_status: Annotated[ToolCallStatus | None, Query(alias="status")] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ToolCallListResponse:
     """List calls by monotonically increasing session sequence number."""
 
-    page = await ToolCallService(uow_factory, adapters, settings, cache).list_for_session(
+    service = ToolCallService(uow_factory, adapters, settings, cache, telemetry)
+    page = await service.list_for_session(
         session_id,
         ToolCallFilters(status=call_status, limit=limit, offset=offset),
     )

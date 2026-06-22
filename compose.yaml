@@ -18,6 +18,17 @@ services:
       MAX_TOOL_RESULT_BYTES: 524288
       MAX_JSON_DEPTH: 20
       MAX_STRING_LENGTH: 51200
+      OTEL_ENABLED: "true"
+      OTEL_SERVICE_NAME: toolwatch
+      OTEL_SERVICE_VERSION: 0.1.0
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: prometheus
+      OTEL_TRACE_SAMPLE_RATIO: 1.0
+      OTEL_SEMCONV_STABILITY_OPT_IN: gen_ai_latest_experimental
+      METRICS_ENABLED: "true"
+      METRICS_PATH: /metrics
     command:
       - /bin/sh
       - -c
@@ -67,6 +78,7 @@ services:
       - "16686:16686"
       - "4317:4317"
       - "4318:4318"
+      - "13133:13133"
     networks:
       - toolwatch
 

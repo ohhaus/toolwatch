@@ -8,6 +8,11 @@ recursive redaction, deterministic risk/rules, sanitized persistence, audit even
 PostgreSQL-backed replay. It does not connect to Ollama or any real GitHub, email,
 database, or other external service.
 
+Observability v1 adds OpenTelemetry request and execution traces, safe structured-log
+correlation, append-only audit correlation, and Prometheus-compatible metrics. Telemetry
+contains metadata only: prompts, arguments, results, rule evidence, adapter configuration,
+authorization data, exception messages, and stack traces are excluded.
+
 ToolWatch is experimental and is not production-ready.
 
 ## Architecture
@@ -168,6 +173,31 @@ The API container applies Alembic migrations before starting Uvicorn. To include
 ```bash
 docker compose --profile observability up -d --build
 ```
+
+Open <http://localhost:16686>, select the `toolwatch` service, and search after executing
+a seeded tool call. An allowed trace contains the HTTP server span,
+application/security spans, and `execute_tool <tool name>`. A blocked call deliberately
+has no adapter-execution span.
+
+Metrics and coarse telemetry health are available at:
+
+```bash
+curl http://localhost:8000/metrics
+curl http://localhost:8000/health/telemetry
+```
+
+Every response includes `X-Correlation-ID`. A canonical UUID is reused; malformed or
+oversized values are replaced. Audit events can be joined to traces:
+
+```bash
+curl 'http://localhost:8000/api/v1/audit-events?trace_id=<32-lowercase-hex>'
+curl 'http://localhost:8000/api/v1/audit-events?correlation_id=<uuid>'
+```
+
+Jaeger is optional. If it is unavailable, execution and database readiness continue.
+Local development samples all traces. Non-development deployments should set
+`OTEL_TRACE_SAMPLE_RATIO` deliberately while retaining audit events as the authoritative
+security history.
 
 Stop the stack with:
 

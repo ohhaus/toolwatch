@@ -14,6 +14,7 @@ from toolwatch.application.errors import (
     InvalidToolArguments,
     InvalidToolResult,
     ToolArgumentsTooLarge,
+    ToolCallBlocked,
     ToolResultTooLarge,
     ToolTimeout,
 )
@@ -31,6 +32,7 @@ from toolwatch.domain.security import (
     AuditEventType,
     BlockingRule,
     RiskFlag,
+    RuleAction,
 )
 from toolwatch.domain.sessions import AgentSession, SessionStatus
 from toolwatch.domain.tool_calls import (
@@ -41,6 +43,8 @@ from toolwatch.domain.tool_calls import (
 )
 from toolwatch.domain.tools import RiskLevel, ToolDefinition
 from toolwatch.infrastructure.adapters import AdapterRegistry
+from toolwatch.telemetry import TelemetryRuntime
+from toolwatch.telemetry.testing import build_in_memory_runtime
 
 
 class MemoryState:
@@ -262,6 +266,8 @@ class MemoryAuditEvents:
         session_id: UUID | None,
         tool_call_id: UUID | None,
         event_type: AuditEventType | None,
+        trace_id: str | None,
+        correlation_id: str | None,
         limit: int,
         offset: int,
     ) -> Page[AuditEvent]:
@@ -271,6 +277,8 @@ class MemoryAuditEvents:
             if (session_id is None or event.session_id == session_id)
             and (tool_call_id is None or event.tool_call_id == tool_call_id)
             and (event_type is None or event.event_type is event_type)
+            and (trace_id is None or event.trace_id == trace_id)
+            and (correlation_id is None or event.correlation_id == correlation_id)
         ]
         return Page(values[offset : offset + limit], len(values), limit, offset)
 
@@ -338,6 +346,7 @@ def setup_service(
     timeout: float = 1,
     max_arguments_bytes: int = 65_536,
     max_result_bytes: int = 524_288,
+    telemetry: TelemetryRuntime | None = None,
 ) -> tuple[ToolCallService, MemoryState, AgentSession, ToolDefinition]:
     state = MemoryState()
     agent = Agent(identity=AgentIdentity("demo", "local", "model"))
@@ -369,6 +378,7 @@ def setup_service(
             max_tool_result_bytes=max_result_bytes,
         ),
         TerminalResponseCache(),
+        telemetry,
     )
     return service, state, session, tool
 
@@ -461,6 +471,79 @@ async def test_invalid_output_is_not_returned() -> None:
 
     assert "result-secret" not in repr(state.calls)
     assert next(iter(state.calls.values())).status is ToolCallStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_safe_span_hierarchy_replay_and_metrics() -> None:
+    telemetry, exporter = build_in_memory_runtime()
+    secret = "UNIQUE_TELEMETRY_ARGUMENT_SECRET_31d7"
+    adapter = CountingAdapter({"payload": "Bearer UNIQUE_TELEMETRY_RESULT_SECRET_92ab"})
+    service, state, session, _ = setup_service(adapter, telemetry=telemetry)
+    key = uuid4()
+    request = ExecuteToolCall(
+        session_id=session.id,
+        tool_name="demo.execute",
+        tool_version="1",
+        arguments={"value": f"Bearer {secret}"},
+        idempotency_key=key,
+    )
+
+    first = await service.execute(request)
+    replay = await service.execute(request)
+
+    spans = exporter.get_finished_spans()
+    names = [span.name for span in spans]
+    execute_span = next(span for span in spans if span.name == "execute_tool demo.execute")
+    first_root = next(span for span in spans if span.name == "toolwatch.execute_tool_call")
+    serialized = repr(spans) + telemetry.metrics.render().decode()
+
+    assert first.call.status is ToolCallStatus.SUCCEEDED
+    assert replay.replayed is True
+    assert execute_span.parent is not None
+    assert first_root.context is not None
+    assert execute_span.parent.span_id == first_root.context.span_id
+    assert execute_span.attributes is not None
+    assert execute_span.attributes["gen_ai.tool.name"] == "demo.execute"
+    assert "toolwatch.replay_tool_call" in names
+    assert "toolwatch_tool_calls_replayed_total" in serialized
+    assert secret not in serialized
+    assert "UNIQUE_TELEMETRY_RESULT_SECRET_92ab" not in serialized
+    assert all(event.attributes == {} for span in spans for event in span.events)
+    assert all(event.name != secret for span in spans for event in span.events)
+    assert state.audits
+    telemetry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_blocked_call_has_no_adapter_execution_span() -> None:
+    telemetry, exporter = build_in_memory_runtime()
+    adapter = CountingAdapter({"ok": True})
+    service, state, session, tool = setup_service(adapter, telemetry=telemetry)
+    rule = BlockingRule(
+        name="block-sensitive",
+        description="Block sensitive fixture.",
+        enabled=True,
+        priority=100,
+        tool_pattern=tool.name,
+        conditions={"has_flag": "sensitive_input"},
+        action=RuleAction.BLOCK,
+    )
+    state.rules[rule.id] = rule
+
+    with pytest.raises(ToolCallBlocked):
+        await service.execute(
+            ExecuteToolCall(
+                session_id=session.id,
+                tool_name=tool.name,
+                tool_version=tool.version,
+                arguments={"value": "Bearer blocked-secret"},
+                idempotency_key=uuid4(),
+            )
+        )
+
+    assert adapter.calls == 0
+    assert not any(span.name.startswith("execute_tool ") for span in exporter.get_finished_spans())
+    telemetry.shutdown()
 
 
 @pytest.mark.asyncio

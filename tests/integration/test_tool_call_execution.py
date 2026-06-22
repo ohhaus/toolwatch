@@ -17,6 +17,8 @@ from toolwatch.infrastructure.adapters import AdapterRegistry
 from toolwatch.infrastructure.database.engine import get_engine, get_session_factory
 from toolwatch.main import create_app
 from toolwatch.seed import seed_tools
+from toolwatch.telemetry import TelemetryRuntime
+from toolwatch.telemetry.testing import build_in_memory_runtime
 
 pytestmark = pytest.mark.integration
 
@@ -65,8 +67,11 @@ def configure_database(monkeypatch: pytest.MonkeyPatch, database_url: str) -> No
     get_terminal_response_cache.cache_clear()
 
 
-def client_for(registry: AdapterRegistry | None = None) -> httpx.AsyncClient:
-    app = create_app()
+def client_for(
+    registry: AdapterRegistry | None = None,
+    telemetry: TelemetryRuntime | None = None,
+) -> httpx.AsyncClient:
+    app = create_app(telemetry)
     if registry is not None:
         app.dependency_overrides[get_adapter_registry] = lambda: registry
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
@@ -422,8 +427,9 @@ async def test_adapter_exception_text_is_never_exposed_or_persisted(
 ) -> None:
     configure_database(monkeypatch, clean_database)
     registry = AdapterRegistry({"mock_github": RaisingAdapter()})
+    telemetry, exporter = build_in_memory_runtime()
 
-    async with client_for(registry) as client:
+    async with client_for(registry, telemetry) as client:
         assert (await client.post("/api/v1/tools", json=tool_request(0))).status_code == 201
         session_id = await create_session(client)
         failed = await client.post(
@@ -447,6 +453,9 @@ async def test_adapter_exception_text_is_never_exposed_or_persisted(
         persisted = await connection.scalar(text("SELECT row_to_json(t)::text FROM tool_calls t"))
     await engine.dispose()
     assert "adapter-private-secret" not in str(persisted)
+    assert "adapter-private-secret" not in repr(exporter.get_finished_spans())
+    assert all(not span.events for span in exporter.get_finished_spans())
+    telemetry.shutdown()
 
 
 @pytest.mark.asyncio
@@ -700,3 +709,113 @@ async def test_rule_management_validation_conflict_patch_and_pagination(
     assert updated.json()["priority"] == 20
     assert listed.json()["total"] == 1
     assert listed.json()["items"][0]["name"] == "flag-high-risk"
+
+
+@pytest.mark.asyncio
+async def test_trace_audit_correlation_filters_and_telemetry_secret_safety(
+    monkeypatch: pytest.MonkeyPatch,
+    clean_database: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configure_database(monkeypatch, clean_database)
+    telemetry, exporter = build_in_memory_runtime()
+    input_secret = "UNIQUE_TRACE_INPUT_SECRET_53f01b"
+    output_secret = "UNIQUE_TRACE_OUTPUT_SECRET_d427c9"
+    prompt_secret = "UNIQUE_TRACE_PROMPT_SECRET_1128da"
+    rule_evidence_secret = "UNIQUE_RULE_EVIDENCE_SECRET_f302"
+    adapter = CountingAdapter({"payload": f"Bearer {output_secret}"})
+    registry = AdapterRegistry({"trace_test": adapter})
+    request = {
+        "name": "demo.trace",
+        "description": rule_evidence_secret,
+        "version": "1.0.0",
+        "input_schema": {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        "output_schema": {
+            "type": "object",
+            "properties": {"payload": {"type": "string"}},
+            "required": ["payload"],
+            "additionalProperties": False,
+        },
+        "base_risk_level": "low",
+        "enabled": True,
+        "adapter_type": "trace_test",
+        "adapter_config": {},
+    }
+
+    async with client_for(registry, telemetry) as client:
+        assert (await client.post("/api/v1/tools", json=request)).status_code == 201
+        session = await client.post(
+            "/api/v1/sessions",
+            json={
+                "agent": {
+                    "name": "trace-agent",
+                    "provider": "test",
+                    "model_name": "deterministic",
+                },
+                "user_prompt": f"Bearer {prompt_secret}",
+            },
+        )
+        correlation_id = str(uuid4())
+        execution = await client.post(
+            "/api/v1/tool-calls",
+            headers={
+                "Idempotency-Key": str(uuid4()),
+                "X-Correlation-ID": correlation_id,
+            },
+            json={
+                "session_id": session.json()["id"],
+                "tool": "demo.trace",
+                "tool_version": "1.0.0",
+                "arguments": {"value": f"Bearer {input_secret}"},
+            },
+        )
+        assert execution.status_code == 200, execution.text
+
+        execute_span = next(
+            span for span in exporter.get_finished_spans() if span.name == "execute_tool demo.trace"
+        )
+        assert execute_span.context is not None
+        trace_id = f"{execute_span.context.trace_id:032x}"
+        by_trace = await client.get(f"/api/v1/audit-events?trace_id={trace_id}")
+        by_correlation = await client.get(f"/api/v1/audit-events?correlation_id={correlation_id}")
+        replay = await client.post(
+            "/api/v1/tool-calls",
+            headers={
+                "Idempotency-Key": execution.request.headers["Idempotency-Key"],
+                "X-Correlation-ID": str(uuid4()),
+            },
+            json={
+                "session_id": session.json()["id"],
+                "tool": "demo.trace",
+                "tool_version": "1.0.0",
+                "arguments": {"value": f"Bearer {input_secret}"},
+            },
+        )
+
+    serialized = (
+        repr(exporter.get_finished_spans())
+        + telemetry.metrics.render().decode()
+        + caplog.text
+        + execution.text
+        + by_trace.text
+        + by_correlation.text
+    )
+    assert replay.status_code == 200
+    assert by_trace.status_code == by_correlation.status_code == 200
+    assert by_trace.json()["total"] > 0
+    assert by_trace.json()["total"] == by_correlation.json()["total"]
+    assert all(item["trace_id"] == trace_id for item in by_trace.json()["items"])
+    assert all(item["correlation_id"] == correlation_id for item in by_correlation.json()["items"])
+    for secret in (
+        input_secret,
+        output_secret,
+        prompt_secret,
+        rule_evidence_secret,
+    ):
+        assert secret not in serialized
+    telemetry.shutdown()

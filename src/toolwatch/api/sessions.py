@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from toolwatch.api.dependencies import get_uow_factory
+from toolwatch.api.dependencies import get_telemetry, get_uow_factory
 from toolwatch.api.errors import error_responses
 from toolwatch.application.ports import UnitOfWorkFactory
 from toolwatch.application.sessions import (
@@ -21,6 +21,7 @@ from toolwatch.domain.agents import AgentIdentity
 from toolwatch.domain.common import JSONObject
 from toolwatch.domain.sessions import SessionStatus
 from toolwatch.security.prompt import prepare_prompt_for_storage
+from toolwatch.telemetry import TelemetryRuntime
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
@@ -101,6 +102,7 @@ class SessionListResponse(BaseModel):
 
 
 UowDependency = Annotated[UnitOfWorkFactory, Depends(get_uow_factory)]
+TelemetryDependency = Annotated[TelemetryRuntime, Depends(get_telemetry)]
 
 
 @router.post(
@@ -112,27 +114,31 @@ UowDependency = Annotated[UnitOfWorkFactory, Depends(get_uow_factory)]
 async def create_session(
     request: SessionCreateRequest,
     uow_factory: UowDependency,
+    telemetry: TelemetryDependency,
 ) -> SessionResponse:
     """Resolve or create an agent and start a session in one transaction."""
 
     settings = get_settings()
-    created = await SessionService(uow_factory).create(
-        CreateSession(
-            agent_identity=AgentIdentity(
-                name=request.agent.name,
-                provider=request.agent.provider,
-                model_name=request.agent.model_name,
-                version=request.agent.version,
-            ),
-            agent_metadata=cast(JSONObject, request.agent.metadata),
-            external_session_id=request.external_session_id,
-            user_prompt_redacted=prepare_prompt_for_storage(
-                request.user_prompt,
-                store_prompts=settings.store_prompts,
-            ),
-            metadata=cast(JSONObject, request.metadata),
+    with telemetry.tracing.span("toolwatch.create_session"):
+        created = await SessionService(uow_factory).create(
+            CreateSession(
+                agent_identity=AgentIdentity(
+                    name=request.agent.name,
+                    provider=request.agent.provider,
+                    model_name=request.agent.model_name,
+                    version=request.agent.version,
+                ),
+                agent_metadata=cast(JSONObject, request.agent.metadata),
+                external_session_id=request.external_session_id,
+                user_prompt_redacted=prepare_prompt_for_storage(
+                    request.user_prompt,
+                    store_prompts=settings.store_prompts,
+                ),
+                metadata=cast(JSONObject, request.metadata),
+            )
         )
-    )
+    telemetry.metrics.counter("toolwatch_sessions_total", {"status": created.session.status.value})
+    telemetry.metrics.counter("toolwatch_audit_events_total")
     return _session_response(created)
 
 

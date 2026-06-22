@@ -7,12 +7,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from toolwatch.api.dependencies import get_uow_factory
+from toolwatch.api.dependencies import get_telemetry, get_uow_factory
 from toolwatch.api.errors import error_responses
 from toolwatch.application.ports import UnitOfWorkFactory
 from toolwatch.application.tools import ToolFilters, ToolService
 from toolwatch.domain.common import JSONObject
 from toolwatch.domain.tools import RiskLevel, ToolDefinition
+from toolwatch.telemetry import TelemetryRuntime
 
 router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
 
@@ -85,6 +86,7 @@ class ToolListResponse(BaseModel):
 
 
 UowDependency = Annotated[UnitOfWorkFactory, Depends(get_uow_factory)]
+TelemetryDependency = Annotated[TelemetryRuntime, Depends(get_telemetry)]
 
 
 @router.post(
@@ -93,7 +95,11 @@ UowDependency = Annotated[UnitOfWorkFactory, Depends(get_uow_factory)]
     status_code=status.HTTP_201_CREATED,
     responses=error_responses(conflict=True),
 )
-async def register_tool(request: ToolCreateRequest, uow_factory: UowDependency) -> ToolResponse:
+async def register_tool(
+    request: ToolCreateRequest,
+    uow_factory: UowDependency,
+    telemetry: TelemetryDependency,
+) -> ToolResponse:
     """Register a trusted, immutable tool version."""
 
     tool = ToolDefinition(
@@ -107,7 +113,8 @@ async def register_tool(request: ToolCreateRequest, uow_factory: UowDependency) 
         adapter_type=request.adapter_type,
         adapter_config=cast(JSONObject, request.adapter_config),
     )
-    return _tool_response(await ToolService(uow_factory).register(tool))
+    with telemetry.tracing.span("toolwatch.register_tool"):
+        return _tool_response(await ToolService(uow_factory).register(tool))
 
 
 @router.get("", response_model=ToolListResponse, responses=error_responses())

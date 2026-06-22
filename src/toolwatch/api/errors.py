@@ -1,7 +1,6 @@
 """Sanitized public error mapping."""
 
 from typing import Any
-from uuid import uuid4
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -10,6 +9,7 @@ from pydantic import BaseModel
 
 from toolwatch.application.errors import ApplicationError
 from toolwatch.domain.common import DomainValidationError
+from toolwatch.telemetry.context import current_correlation
 
 
 class ErrorBody(BaseModel):
@@ -108,7 +108,13 @@ async def _internal_error(_: Request, __: Exception) -> JSONResponse:
 
 
 def _response(status_code: int, code: str, message: str) -> JSONResponse:
-    body = ErrorResponse(error=ErrorBody(code=code, message=message, correlation_id=str(uuid4())))
+    body = ErrorResponse(
+        error=ErrorBody(
+            code=code,
+            message=message,
+            correlation_id=current_correlation().correlation_id,
+        )
+    )
     return JSONResponse(status_code=status_code, content=body.model_dump())
 
 

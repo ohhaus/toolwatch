@@ -169,11 +169,22 @@ class AuditEvent:
     actor_type: str = "system"
     actor_id: str | None = None
     trace_id: str | None = None
+    correlation_id: str | None = None
     id: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
         require_non_empty(self.actor_type, "actor_type")
+        if self.trace_id is not None and (
+            len(self.trace_id) != 32
+            or any(character not in "0123456789abcdef" for character in self.trace_id)
+        ):
+            raise DomainValidationError("trace_id must be a lowercase 32-character hex value")
+        if self.correlation_id is not None:
+            try:
+                UUID(self.correlation_id)
+            except ValueError as exc:
+                raise DomainValidationError("correlation_id must be a UUID") from exc
         object.__setattr__(
             self,
             "payload_redacted",

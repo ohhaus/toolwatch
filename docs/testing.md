@@ -18,6 +18,14 @@ idempotence, plus deterministic coverage for key/value detectors, HMAC fingerpri
 depth/node limits, SQL risk, indirect prompt injection, finite rule conditions, priority,
 and block precedence.
 
+Observability unit tests use an in-memory span exporter and a fresh isolated Prometheus
+registry per test. They verify W3C parent propagation, correlation UUID validation,
+parent-child span relationships, disabled/no-op behavior, bounded labels, exporter
+failure isolation, blocked calls without adapter spans, replay metrics, and safe
+shutdown. Unique prompt, argument, result, exporter-exception, and rule-evidence values
+are searched across spans, events, metric output, structured logs, audit fields, and
+public responses.
+
 Integration tests live in `tests/integration` and carry the `integration` marker. They
 use one disposable PostgreSQL 17 Testcontainer; SQLite is not an acceptable substitute.
 The suite applies Alembic to an empty database, exercises downgrade/upgrade, verifies
@@ -29,6 +37,11 @@ one-to-one sanitized results, terminal persistence, concurrent same-key at-most-
 behavior, concurrent sequence allocation, restart-safe PostgreSQL replay, blocked
 downstream prevention, audit ordering, and absence of unique raw input/output secrets
 from database rows, logs, errors, audit payloads, and API reads.
+
+PostgreSQL telemetry integration verifies trace/correlation persistence and indexed audit
+filters while still using the in-memory exporter. CI and default tests do not require
+Jaeger. The optional Compose smoke test starts the observability profile, submits allowed
+and blocked calls, queries Jaeger, and inspects `/metrics` for forbidden labels.
 
 Tests requiring a developer-managed Ollama process must carry the `local_llm` marker.
 That marker is excluded by `make test`, `make check`, and CI. No such tests are part of

@@ -590,6 +590,8 @@ class SqlAlchemyAuditEventRepository:
         session_id: UUID | None,
         tool_call_id: UUID | None,
         event_type: AuditEventType | None,
+        trace_id: str | None,
+        correlation_id: str | None,
         limit: int,
         offset: int,
     ) -> Page[AuditEvent]:
@@ -600,6 +602,10 @@ class SqlAlchemyAuditEventRepository:
             conditions.append(AuditEventModel.tool_call_id == tool_call_id)
         if event_type is not None:
             conditions.append(AuditEventModel.event_type == event_type.value)
+        if trace_id is not None:
+            conditions.append(AuditEventModel.trace_id == trace_id)
+        if correlation_id is not None:
+            conditions.append(AuditEventModel.correlation_id == correlation_id)
         statement = select(AuditEventModel)
         count_statement = select(func.count()).select_from(AuditEventModel)
         if conditions:
@@ -631,6 +637,7 @@ class SqlAlchemyAuditEventRepository:
                 actor_id=event.actor_id,
                 payload_redacted=event.payload_redacted,
                 trace_id=event.trace_id,
+                correlation_id=event.correlation_id,
                 created_at=event.created_at,
             )
             for event in events
@@ -693,6 +700,7 @@ def _audit_from_model(model: AuditEventModel) -> AuditEvent:
         actor_id=model.actor_id,
         payload_redacted=cast(JSONObject, model.payload_redacted),
         trace_id=model.trace_id,
+        correlation_id=model.correlation_id,
         created_at=model.created_at,
     )
 

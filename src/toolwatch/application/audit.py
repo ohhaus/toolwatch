@@ -15,6 +15,8 @@ class AuditFilters:
     session_id: UUID | None = None
     tool_call_id: UUID | None = None
     event_type: AuditEventType | None = None
+    trace_id: str | None = None
+    correlation_id: str | None = None
     limit: int = 50
     offset: int = 0
 
@@ -41,6 +43,8 @@ class AuditService:
                 session_id=filters.session_id,
                 tool_call_id=filters.tool_call_id,
                 event_type=filters.event_type,
+                trace_id=filters.trace_id,
+                correlation_id=filters.correlation_id,
                 limit=filters.limit,
                 offset=filters.offset,
             )

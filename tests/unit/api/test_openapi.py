@@ -20,6 +20,8 @@ def test_openapi_documents_registry_and_session_contracts() -> None:
     assert "/api/v1/audit-events" in paths
     assert "/api/v1/sessions/{session_id}/audit-events" in paths
     assert "/api/v1/tool-calls/{call_id}/audit-events" in paths
+    assert "/metrics" in paths
+    assert "/health/telemetry" in paths
     assert "409" in paths["/api/v1/tools"]["post"]["responses"]
     assert "422" in paths["/api/v1/tools"]["post"]["responses"]
     execute = paths["/api/v1/tool-calls"]["post"]
@@ -28,3 +30,4 @@ def test_openapi_documents_registry_and_session_contracts() -> None:
     assert "RiskLevel" in schema["components"]["schemas"]
     assert "SessionStatus" in schema["components"]["schemas"]
     assert "ToolCallStatus" in schema["components"]["schemas"]
+    assert "X-Correlation-ID" in paths["/api/v1/tool-calls"]["post"]["responses"]["200"]["headers"]

@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     max_redaction_nodes: int = Field(default=10_000, ge=1, le=1_000_000)
     store_redacted_arguments: bool = True
     store_redacted_results: bool = True
+    otel_enabled: bool = True
+    otel_service_name: str = Field(default="toolwatch", min_length=1, max_length=100)
+    otel_service_version: str = Field(default=__version__, min_length=1, max_length=100)
+    otel_exporter_otlp_endpoint: str = "http://localhost:4318"
+    otel_exporter_otlp_protocol: Literal["http/protobuf"] = "http/protobuf"
+    otel_traces_exporter: Literal["otlp", "none"] = "otlp"
+    otel_metrics_exporter: Literal["prometheus", "none"] = "prometheus"
+    otel_trace_sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    otel_semconv_stability_opt_in: str = "gen_ai_latest_experimental"
+    metrics_enabled: bool = True
+    metrics_path: str = Field(default="/metrics", pattern=r"^/[A-Za-z0-9/_-]*$")
 
     @model_validator(mode="after")
     def validate_redaction_key(self) -> "Settings":

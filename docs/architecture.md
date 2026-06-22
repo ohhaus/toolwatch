@@ -133,4 +133,39 @@ migrations, starts Uvicorn as a non-root user, and reports liveness through an H
 healthcheck. PostgreSQL data is stored in a named development volume.
 
 Jaeger is available through the `observability` profile and exposes its UI and OTLP
-ports. Telemetry instrumentation is intentionally deferred to a later milestone.
+ports.
+
+## Observability v1
+
+One application-owned telemetry runtime constructs the OpenTelemetry tracer provider,
+OTLP HTTP exporter, and isolated Prometheus registry. Construction performs no exporter
+network handshake. Shutdown attempts a bounded flush and closes the provider; failures
+are sanitized and cannot make a tool request or database readiness fail.
+
+```text
+HTTP server
+└── toolwatch.execute_tool_call
+    ├── toolwatch.validate_arguments
+    ├── toolwatch.redact_arguments
+    ├── toolwatch.classify_risk
+    ├── toolwatch.evaluate_rules
+    ├── execute_tool <trusted tool name>
+    ├── toolwatch.validate_result
+    ├── toolwatch.redact_result
+    └── toolwatch.persist_terminal_result
+```
+
+Replay uses `toolwatch.replay_tool_call`. A blocked call stops before the adapter span.
+Persistence is represented by coarse manual spans and duration metrics; SQL text, bind
+parameters, URLs, and connection strings are not captured.
+
+Incoming W3C Trace Context is accepted by the ASGI middleware. A canonical UUID
+`X-Correlation-ID` is reused or generated and returned. Context variables add
+correlation, trace, and span IDs to safe JSON lifecycle logs. Audit events persist the
+request trace and correlation IDs and expose strict indexed filters.
+
+Audit remains the authoritative, transactional security history. Traces are sampled
+operational data and may be absent. A strict attribute and metric-label allowlist rejects
+payloads, exception messages, rule identities/evidence, prompts, destinations, and
+high-cardinality IDs. Experimental GenAI attribute names are isolated behind the
+telemetry attribute module. See [ADR 0005](adr/0005-observability-v1.md).

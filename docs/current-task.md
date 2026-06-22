@@ -1,35 +1,23 @@
-# Current Task: Security Pipeline v1
-
-> Implementation status: implemented on 2026-06-22. This file remains the acceptance
-> contract; verification details are reported by the completing agent.
+# Current Task: Observability v1
 
 ## Context
 
-The repository currently provides:
+ToolWatch currently provides:
 
 * Tool Registry;
 * Agent Sessions;
-* Tool Call execution pipeline;
-* trusted immutable mock-adapter registry;
+* trusted tool-call execution;
 * JSON Schema validation;
-* canonical JSON and SHA-256 hashing;
-* idempotency;
-* PostgreSQL-safe sequence allocation;
-* payload-free ToolCall persistence;
-* safe lifecycle logging;
-* unit, API, integration, concurrency, and security tests.
+* deterministic redaction;
+* risk classification;
+* blocking rules;
+* risk flags;
+* audit events;
+* persistent idempotent replay;
+* PostgreSQL persistence;
+* structured safe lifecycle logging.
 
-The current execution pipeline intentionally does not persist raw arguments or results because the redaction layer does not yet exist.
-
-This milestone introduces:
-
-1. recursive deterministic redaction;
-2. sanitized argument and result persistence;
-3. risk classification;
-4. risk flags;
-5. runtime blocking rules;
-6. append-only audit events;
-7. persistent terminal-response replay.
+This milestone introduces complete operational observability without exposing raw prompts, tool arguments, tool results, secrets, or high-cardinality data.
 
 Read before changing code:
 
@@ -38,8 +26,8 @@ Read before changing code:
 3. `docs/architecture.md`
 4. `docs/threat-model.md`
 5. `docs/testing.md`
-6. all existing domain, application, security, persistence, API, and migration code
-7. ADR 0003
+6. all existing telemetry, execution, security, audit, API, and configuration code
+7. relevant ADRs
 
 Treat `AGENTS.md` and `docs/product-spec.md` as authoritative.
 
@@ -47,1248 +35,810 @@ Treat `AGENTS.md` and `docs/product-spec.md` as authoritative.
 
 ## Goal
 
-Extend the execution pipeline to:
-
-```text
-Receive tool call
-    ↓
-Resolve session and trusted tool
-    ↓
-Validate arguments
-    ↓
-Redact arguments
-    ↓
-Classify risk
-    ↓
-Evaluate blocking rules
-    ↓
-BLOCK or EXECUTE
-    ↓
-Redact and validate result
-    ↓
-Persist sanitized payloads
-    ↓
-Persist risk flags and audit events
-    ↓
-Return sanitized result
-```
-
-After this milestone, ToolWatch must be able to demonstrate:
-
-* a normal read operation succeeding;
-* an email operation being flagged;
-* a destructive SQL request being blocked;
-* a secret being removed before persistence;
-* an indirect prompt-injection string in tool output being flagged;
-* an idempotent successful response being replayed after application restart.
-
----
-
-## Non-negotiable security invariants
-
-1. Raw arguments must never be persisted.
-2. Raw results must never be persisted.
-3. Raw secrets must never appear in:
-
-   * PostgreSQL;
-   * logs;
-   * exceptions;
-   * API read endpoints;
-   * audit events.
-4. Redaction must run before persistence, logging, audit recording, or rendering.
-5. Risk and blocking decisions must be deterministic.
-6. An LLM must not participate in allow, flag, or block decisions.
-7. A matching block rule must prevent adapter execution.
-8. Unknown or disabled tools must still never execute.
-9. Sanitized payloads must preserve useful structure without retaining secrets.
-10. Public error responses must remain sanitized.
-
----
-
-## Scope
-
-### Must implement
-
-* recursive redaction engine;
-* secret detection;
-* sanitized payload persistence;
-* risk levels;
-* risk flags;
-* deterministic risk classifier;
-* deterministic blocking rules;
-* audit-event persistence;
-* blocked ToolCall lifecycle;
-* persistent response replay;
-* rule management API;
-* security tests;
-* documentation and threat-model updates.
-
-### Must not implement
-
-* Ollama integration;
-* MCP;
-* authentication;
-* users or tenants;
-* human approvals;
-* external policy engines;
-* OPA, Cedar, or OpenFGA;
-* ML anomaly detection;
-* real GitHub, email, or database integrations;
-* background recovery worker;
-* complete OpenTelemetry GenAI instrumentation;
-* dashboard.
-
----
-
-## Domain additions
-
-Add framework-independent domain concepts:
-
-* `RiskLevel`;
-* `RiskFlag`;
-* `RiskFlagCode`;
-* `RuleAction`;
-* `BlockingRule`;
-* `RuleMatch`;
-* `RuleEvaluation`;
-* `RedactionResult`;
-* `RedactionFinding`;
-* `AuditEvent`;
-* `AuditEventType`.
-
-Domain code must remain independent of FastAPI, SQLAlchemy, and telemetry SDKs.
-
----
-
-## Risk levels
-
-Define ordered levels:
-
-```text
-low
-medium
-high
-critical
-```
-
-Ordering:
-
-```text
-low < medium < high < critical
-```
-
-A higher discovered risk may raise the effective risk level.
-
-No detector or rule may lower the registered tool’s `base_risk_level`.
-
-Example:
-
-```text
-registered base risk: medium
-secret detected: high
-effective risk: high
-```
-
----
-
-## Rule actions
-
-Supported actions:
-
-```text
-allow
-flag
-block
-```
-
-Precedence:
-
-```text
-block > flag > allow
-```
-
-Rules must not lower risk.
-
-A block decision is terminal for rule evaluation.
-
----
-
-## ToolCall changes
-
-Extend ToolCall with:
-
-```text
-risk_level
-decision
-matched_rule_ids
-redacted_arguments
-```
-
-Allowed decisions:
-
-```text
-allow
-flag
-block
-reject
-```
-
-Extend statuses:
-
-```text
-received
-validating
-rejected
-evaluating
-blocked
-executing
-succeeded
-failed
-timed_out
-```
-
-Required paths:
-
-```text
-received → validating → rejected
-
-received → validating → evaluating → blocked
-
-received → validating → evaluating → executing → succeeded
-
-received → validating → evaluating → executing → failed
-
-received → validating → evaluating → executing → timed_out
-```
-
-`blocked` is terminal.
-
-A blocked call must not invoke the adapter.
-
----
-
-## Tool result changes
-
-Replace or extend `ToolResultMetadata` to support:
-
-```text
-tool_call_id
-redacted_payload
-payload_hash
-content_type
-size_bytes
-schema_valid
-truncated
-created_at
-```
-
-Requirements:
-
-* store only sanitized output;
-* retain the existing hash of the original canonical output where safe;
-* never persist original output;
-* enforce result-size limits before and after redaction;
-* API replay must use the persisted redacted payload;
-* read endpoints must return only redacted content.
-
-If the result is too large:
-
-* do not persist the full result;
-* return the established safe error;
-* mark execution failed.
-
-Do not silently truncate API execution results unless the product specification explicitly requires truncation.
-
----
-
-# Part 1: Redaction engine
-
-## Redaction API
-
-Implement a framework-independent service similar to:
-
-```python
-class Redactor(Protocol):
-    def redact(self, value: JSONValue) -> RedactionResult:
-        ...
-```
-
-Example result:
-
-```python
-@dataclass(frozen=True)
-class RedactionResult:
-    value: JSONValue
-    findings: tuple[RedactionFinding, ...]
-```
-
-A finding must contain only safe metadata:
-
-```text
-path
-detector
-category
-fingerprint
-```
-
-It must not contain the original secret.
-
----
-
-## Sensitive field names
-
-Match keys case-insensitively.
-
-At minimum:
-
-```text
-password
-passwd
-passphrase
-secret
-token
-access_token
-refresh_token
-api_key
-apikey
-authorization
-proxy_authorization
-cookie
-set_cookie
-private_key
-client_secret
-credential
-credentials
-```
-
-Support common naming variants:
-
-```text
-apiKey
-accessToken
-clientSecret
-privateKey
-```
-
-Normalize names before matching.
-
-Do not redact every field merely containing the substring `key`, because fields such as `monkey`, `keyboard`, or `foreign_key` would produce excessive false positives.
-
----
-
-## Value-pattern detection
-
-Detect at least:
-
-### Authorization values
-
-```text
-Bearer <value>
-Basic <value>
-```
-
-### JWT-like values
-
-Three base64url-like dot-separated segments.
-
-### Private keys
-
-Headers such as:
-
-```text
------BEGIN PRIVATE KEY-----
------BEGIN RSA PRIVATE KEY-----
------BEGIN OPENSSH PRIVATE KEY-----
-```
-
-### Credentials in URLs
-
-Example:
-
-```text
-https://username:password@example.com/path
-```
-
-Sanitized form must not retain the password.
-
-### Configurable secret patterns
-
-Provide configuration for additional patterns.
-
-Do not add vendor-specific patterns unless tested and documented.
-
----
-
-## Replacement format
-
-Default replacement:
-
-```text
-[REDACTED]
-```
-
-Optional development-safe form:
-
-```text
-[REDACTED:<fingerprint-prefix>]
-```
-
-Do not expose the full fingerprint publicly.
-
----
-
-## Secret fingerprints
-
-Use keyed HMAC-SHA256 rather than plain SHA-256:
-
-```text
-HMAC-SHA256(REDACTION_FINGERPRINT_KEY, secret)
-```
-
-Requirements:
-
-* key comes from environment configuration;
-* production-like startup must reject a missing or unsafe key when fingerprints are enabled;
-* fingerprinting may be disabled;
-* do not persist or log the key;
-* only a short prefix may appear in public sanitized data;
-* full fingerprint may be stored internally if necessary;
-* use constant-time comparison where fingerprints are compared.
-
-Python’s standard `hmac` module provides keyed hashing and `compare_digest` for constant-time comparison.
-
----
-
-## Recursive processing
-
-Support:
-
-* dictionaries;
-* lists;
-* strings;
-* numbers;
-* booleans;
-* null.
-
-Requirements:
-
-* preserve object and array shape;
-* preserve non-sensitive values;
-* enforce maximum depth;
-* enforce maximum number of visited nodes;
-* avoid recursion exhaustion;
-* behave deterministically;
-* be idempotent.
-
-Required property:
-
-```text
-redact(redact(value)) == redact(value)
-```
-
-Do not attempt to process arbitrary Python objects.
-
----
-
-## Partial-string redaction
-
-For strings containing an embedded secret, redact only the sensitive portion when safe.
-
-Example:
-
-Input:
-
-```text
-Authorization failed for Bearer abcdef123456
-```
-
-Output:
-
-```text
-Authorization failed for [REDACTED]
-```
-
-Do not return the original secret in finding metadata.
-
----
-
-## Redaction order
-
-Redaction must occur:
-
-1. after structural request parsing;
-2. after argument schema validation;
-3. before logging arguments;
-4. before persisting arguments;
-5. before risk findings are persisted;
-6. after adapter output is received;
-7. before output logging, persistence, audit, tracing, or API replay storage.
-
-The adapter may receive the original validated arguments because it needs them to execute.
-
-No other downstream component should receive raw payloads unless explicitly required within the trusted execution boundary.
-
----
-
-# Part 2: Risk engine
-
-## Inputs
-
-Risk evaluation may use:
-
-* registered base risk;
-* tool name;
-* adapter type;
-* validated arguments;
-* redaction findings;
-* payload size;
-* known operation semantics;
-* deterministic detectors.
-
-It must not use:
-
-* LLM output as authority;
-* probabilistic model inference;
-* user-controlled risk labels;
-* tool description as a trusted instruction.
-
----
-
-## Required risk flags
-
-Implement stable codes at minimum:
-
-```text
-write_operation
-external_side_effect
-sensitive_input
-sensitive_output
-destructive_sql
-write_sql
-multiple_sql_statements
-possible_command_injection
-possible_path_traversal
-possible_ssrf_target
-possible_indirect_prompt_injection
-oversized_payload
-unknown_operation
-```
-
-Each flag contains:
-
-```text
-code
-severity
-message
-safe_evidence
-```
-
-`safe_evidence` must not include secrets or full payloads.
-
-Example:
-
-```json
-{
-  "code": "destructive_sql",
-  "severity": "critical",
-  "message": "The query contains a destructive SQL operation.",
-  "safe_evidence": {
-    "keyword": "DROP"
-  }
-}
-```
-
----
-
-## Tool-specific classification
-
-### `github.list_issues`
-
-Default:
-
-```text
-risk: low
-decision: allow
-```
-
-### `email.send`
-
-Default flags:
-
-```text
-write_operation
-external_side_effect
-```
-
-Effective risk:
-
-```text
-medium
-```
-
-If sensitive input appears in recipient, subject, or body:
-
-```text
-sensitive_input
-```
-
-Effective risk must become at least `high`.
-
-Do not block by default unless a configured rule matches.
-
-### `database.query`
-
-Classify deterministic SQL categories without executing SQL.
-
-At minimum detect:
-
-```text
-SELECT
-INSERT
-UPDATE
-DELETE
-DROP
-TRUNCATE
-ALTER
-CREATE
-GRANT
-REVOKE
-```
-
-Rules:
-
-* SELECT → low;
-* INSERT/UPDATE → high;
-* DELETE → high or critical;
-* DROP/TRUNCATE/ALTER → critical;
-* multiple statements → critical;
-* unknown operation → high.
-
-Do not build a full SQL parser unless an existing lightweight parser is justified.
-
-String matching must avoid obvious trivial bypasses involving casing and whitespace.
-
-Tests must cover comments and mixed casing where practical.
-
----
-
-## Indirect prompt-injection detector
-
-Implement a conservative deterministic detector for tool output.
-
-Flag phrases and patterns such as:
-
-```text
-ignore previous instructions
-ignore all prior instructions
-reveal the system prompt
-send the secret
-read ~/.ssh
-upload credentials
-call another tool
-exfiltrate
-```
-
-The detector:
-
-* must only produce a flag;
-* must not claim to conclusively detect prompt injection;
-* must not modify tool output beyond normal redaction;
-* must not use an LLM;
-* must be documented as heuristic;
-* must not automatically block ordinary output unless a rule explicitly says so.
-
-Tool output can carry malicious instructions that influence a later agent turn, which OWASP identifies as indirect prompt injection and MCP tool poisoning.
-
----
-
-# Part 3: Blocking rules
-
-## Rule source
-
-Support rules persisted in PostgreSQL.
-
-Optional YAML bootstrap rules may be supported, but PostgreSQL must remain the source of runtime truth.
-
-Do not implement a general-purpose DSL.
-
----
-
-## BlockingRule fields
-
-```text
-id
-name
-description
-enabled
-priority
-tool_pattern
-conditions
-action
-created_at
-updated_at
-```
-
-`conditions` may use JSONB but must follow a tightly validated schema.
-
----
-
-## Supported conditions
-
-Support only:
-
-```text
-tool_equals
-tool_matches
-risk_at_least
-has_flag
-argument_path_equals
-argument_path_matches
-result_has_flag
-```
-
-Do not support:
-
-* arbitrary Python expressions;
-* Jinja evaluation;
-* shell commands;
-* dynamic imports;
-* SQL fragments;
-* unrestricted recursive expressions.
-
----
-
-## Rule example
-
-```json
-{
-  "name": "block-destructive-sql",
-  "description": "Block destructive database operations.",
-  "enabled": true,
-  "priority": 100,
-  "tool_pattern": "database.query",
-  "conditions": {
-    "has_flag": "destructive_sql"
-  },
-  "action": "block"
-}
-```
-
----
-
-## Required default development rules
-
-Provide an explicit idempotent seed command for:
-
-### Block destructive SQL
-
-```text
-tool: database.query
-flag: destructive_sql
-action: block
-```
-
-### Block multiple SQL statements
-
-```text
-tool: database.query
-flag: multiple_sql_statements
-action: block
-```
-
-### Flag sensitive email
-
-```text
-tool: email.send
-flag: sensitive_input
-action: flag
-```
-
-### Flag suspicious tool output
-
-```text
-result flag: possible_indirect_prompt_injection
-action: flag
-```
-
-Result rules do not affect an already executed side effect. They annotate the terminal result.
-
-Document this limitation clearly.
-
----
-
-## Evaluation order
-
-Before adapter execution:
-
-1. classify input risk;
-2. evaluate input rules;
-3. if block matches:
-
-   * persist blocked status;
-   * do not call adapter;
-   * create audit event;
-   * return safe block response.
-
-After adapter execution:
-
-1. redact result;
-2. classify output risk;
-3. evaluate result-oriented flag rules;
-4. persist flags and sanitized result;
-5. return sanitized result.
-
-No post-execution rule may retroactively claim it prevented an action.
-
----
-
-## Rule-management API
-
 Implement:
 
-```http
-GET /api/v1/rules
-POST /api/v1/rules
-GET /api/v1/rules/{rule_id}
-PATCH /api/v1/rules/{rule_id}
-```
+1. OpenTelemetry tracing;
+2. application and tool-execution spans;
+3. Prometheus-compatible metrics;
+4. trace and correlation ID propagation;
+5. correlation between traces and audit events;
+6. telemetry-safe attribute filtering;
+7. Jaeger integration;
+8. operational documentation and tests.
 
-MVP PATCH may modify only:
+The complete observable flow should be:
 
 ```text
-enabled
-priority
-action
-description
+HTTP request span
+    ↓
+application use-case span
+    ↓
+tool validation span
+    ↓
+risk evaluation span
+    ↓
+rule evaluation span
+    ↓
+execute_tool span
+    ↓
+result validation/redaction span
+    ↓
+persistence span
 ```
 
-Changing condition structure may require creating a new rule.
+Do not implement Ollama, dashboard, MCP, or real external tools in this milestone.
+
+---
+
+## Security invariants
+
+Telemetry must never contain:
+
+* raw prompts;
+* raw arguments;
+* raw results;
+* redacted payload bodies;
+* secrets;
+* authorization headers;
+* cookies;
+* database URLs;
+* adapter configuration;
+* arbitrary exception messages;
+* arbitrary user-controlled URLs;
+* audit payload bodies.
+
+Only bounded, low-cardinality, sanitized metadata may be emitted.
+
+A telemetry exporter failure must not cause a tool execution request to fail.
+
+Telemetry must fail open for availability, while execution security remains fail closed.
+
+---
+
+## Architecture
+
+Telemetry must remain an infrastructure concern.
+
+Expected structure:
+
+```text
+src/toolwatch/telemetry/
+├── __init__.py
+├── config.py
+├── provider.py
+├── tracing.py
+├── metrics.py
+├── attributes.py
+├── middleware.py
+└── testing.py
+```
+
+Small deviations are allowed when consistent with the repository.
+
+Domain code must not import OpenTelemetry.
+
+Application code may depend on a small internal telemetry protocol or no-op abstraction, but must not depend directly on vendor exporters.
+
+Required implementations:
+
+* real OpenTelemetry implementation;
+* no-op implementation;
+* test recorder implementation where useful.
+
+---
+
+## Configuration
+
+Add typed settings:
+
+```text
+OTEL_ENABLED=true
+OTEL_SERVICE_NAME=toolwatch
+OTEL_SERVICE_VERSION=<application version>
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_TRACES_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=prometheus
+OTEL_TRACE_SAMPLE_RATIO=1.0
+OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental
+METRICS_ENABLED=true
+METRICS_PATH=/metrics
+```
 
 Requirements:
 
-* validated request schema;
-* stable pagination;
-* deterministic ordering;
-* duplicate names return conflict;
-* invalid conditions return 422;
-* public response must not expose internal implementation details.
-
-Do not implement delete in this milestone.
+* telemetry can be fully disabled;
+* tests default to in-memory or no-op exporters;
+* CI must not require Jaeger;
+* exporter configuration errors must be sanitized;
+* no API startup network connection should block application readiness indefinitely;
+* application shutdown must flush and close providers safely.
 
 ---
 
-# Part 4: Audit events
+## Resource attributes
 
-## AuditEvent fields
+Configure low-cardinality resource attributes:
 
 ```text
-id
-session_id
-tool_call_id
-event_type
-actor_type
-actor_id
-payload_redacted
+service.name
+service.version
+deployment.environment.name
+telemetry.sdk.language
+```
+
+Do not use:
+
+* hostname when unnecessary;
+* developer username;
+* local filesystem path;
+* database name;
+* Git branch;
+* session ID.
+
+---
+
+# Part 1: Trace propagation
+
+## Incoming requests
+
+Instrument FastAPI requests.
+
+Required behavior:
+
+* accept valid W3C Trace Context headers;
+* create a server span for each request;
+* propagate current trace context through application execution;
+* include response correlation ID;
+* return a correlation header such as:
+
+```http
+X-Correlation-ID: <value>
+```
+
+If the client provides a valid correlation ID according to a strict format, it may be reused.
+
+Otherwise generate one.
+
+Do not trust arbitrary unbounded correlation strings.
+
+Recommended format:
+
+```text
+UUID
+```
+
+---
+
+## Internal correlation
+
+Every relevant request must expose:
+
+```text
+correlation_id
 trace_id
-created_at
+span_id
 ```
 
-Use JSONB for `payload_redacted`.
+Use these identifiers in:
 
-No update or delete repository methods.
+* structured logs;
+* audit events;
+* safe API error responses;
+* tool-call records where already supported.
+
+Do not expose internal database IDs unnecessarily.
+
+Trace ID must come from the active OpenTelemetry span where available.
+
+When tracing is disabled, correlation ID must still work.
 
 ---
 
-## Required event types
+# Part 2: Required spans
 
-```text
-session.started
-session.completed
-tool_call.received
-tool_call.validated
-tool_call.risk_classified
-tool_call.flagged
-tool_call.blocked
-tool_call.started
-tool_call.completed
-tool_call.failed
-tool_call.timed_out
-redaction.applied
-rule.matched
-```
+## HTTP request spans
 
-Do not create duplicate semantic events for retries or response replay.
+Use supported FastAPI/ASGI instrumentation where practical.
+
+Avoid double instrumentation.
+
+Capture:
+
+* HTTP method;
+* route template;
+* response status;
+* server duration.
+
+Do not capture:
+
+* raw request body;
+* query parameter values unless explicitly allowlisted;
+* authorization headers;
+* cookies;
+* arbitrary URL query strings.
 
 ---
 
-## Audit payload restrictions
+## Application use-case spans
 
-Audit payload may include:
+Create internal spans for important orchestration flows:
 
 ```text
-tool name
-tool version
+toolwatch.create_session
+toolwatch.register_tool
+toolwatch.execute_tool_call
+toolwatch.evaluate_risk
+toolwatch.evaluate_rules
+toolwatch.persist_terminal_result
+toolwatch.replay_tool_call
+```
+
+Use bounded span names.
+
+Do not include IDs in span names.
+
+IDs may be attributes only where explicitly allowed.
+
+---
+
+## Tool execution spans
+
+Create one span for every attempted adapter execution.
+
+Span name:
+
+```text
+execute_tool {tool_name}
+```
+
+Span kind:
+
+```text
+INTERNAL
+```
+
+Required attributes:
+
+```text
+gen_ai.operation.name = execute_tool
+gen_ai.tool.name
+gen_ai.tool.type
+toolwatch.tool.version
+toolwatch.tool.adapter_type
+toolwatch.risk.level
+toolwatch.decision
+toolwatch.call.status
+toolwatch.replayed
+```
+
+Optional safe attributes:
+
+```text
+toolwatch.flag.count
+toolwatch.rule.match_count
+toolwatch.redaction.input_count
+toolwatch.redaction.output_count
+```
+
+Do not attach:
+
+```text
+tool arguments
+tool result
+tool description
+rule body
+risk evidence body
+error message
+session prompt
+```
+
+Because GenAI semantic conventions are experimental, isolate attribute names behind a single telemetry attribute module.
+
+---
+
+## Validation and security spans
+
+Create short internal spans:
+
+```text
+toolwatch.validate_arguments
+toolwatch.redact_arguments
+toolwatch.classify_risk
+toolwatch.evaluate_rules
+toolwatch.redact_result
+toolwatch.validate_result
+```
+
+Required safe attributes may include:
+
+```text
+validation.valid
+validation.error_count
+redaction.finding_count
+risk.level
+rule.match_count
+decision
+```
+
+Do not add field paths if they could disclose sensitive structure.
+
+---
+
+## Persistence spans
+
+Prefer SQLAlchemy instrumentation where it is stable and compatible.
+
+Do not manually add SQL statements to span attributes.
+
+Do not capture bind parameters.
+
+Ensure database instrumentation does not expose:
+
+* SQL parameter values;
+* connection strings;
+* passwords;
+* raw JSONB payloads.
+
+If safe SQLAlchemy instrumentation cannot be guaranteed, keep persistence spans manual and coarse-grained.
+
+---
+
+## Span status and errors
+
+Span status must reflect operation outcome:
+
+* success → unset/OK according to SDK conventions;
+* rejected validation → not an infrastructure error;
+* blocked request → not an exception;
+* timeout → error;
+* adapter failure → error;
+* database failure → error.
+
+Record exception type where safe.
+
+Do not record arbitrary exception messages by default.
+
+Allowed:
+
+```text
+exception.type
+toolwatch.error.code
+```
+
+Forbidden:
+
+```text
+exception.message
+exception.stacktrace
+```
+
+unless a development-only explicit opt-in is enabled and sanitization is guaranteed.
+
+Default must remain safe.
+
+---
+
+# Part 3: Metrics
+
+Expose Prometheus-compatible metrics through:
+
+```http
+GET /metrics
+```
+
+The endpoint may be disabled through configuration.
+
+Required metrics:
+
+```text
+toolwatch_http_requests_total
+toolwatch_http_request_duration_seconds
+
+toolwatch_sessions_total
+
+toolwatch_tool_calls_total
+toolwatch_tool_call_duration_seconds
+toolwatch_tool_calls_blocked_total
+toolwatch_tool_calls_failed_total
+toolwatch_tool_calls_replayed_total
+toolwatch_tool_timeouts_total
+
+toolwatch_validation_failures_total
+toolwatch_redactions_total
+toolwatch_risk_flags_total
+toolwatch_rule_matches_total
+toolwatch_audit_events_total
+
+toolwatch_db_operation_duration_seconds
+```
+
+Use correct metric types:
+
+* counters for totals;
+* histograms for durations;
+* gauges only for meaningful current-state values.
+
+Do not include units in metric names when metadata already defines the unit.
+
+---
+
+## Metric labels
+
+Allowed bounded labels:
+
+```text
+http.method
+http.route
+http.status_code
+
+tool_name
+tool_version
+adapter_type
 status
 decision
-risk level
-flag codes
-rule IDs
-redaction count
-duration
-safe error code
+risk_level
+error_code
+flag_code
+rule_action
+replayed
 ```
 
-It must not include:
+Before adding a label, confirm that its possible values are bounded.
+
+Forbidden labels:
 
 ```text
-raw arguments
-raw result
-raw secret
-raw exception
-full prompt
-adapter credentials
-database URL
+session_id
+tool_call_id
+agent_id
+trace_id
+correlation_id
+repository
+email
+SQL query
+URL
+rule_id
+rule_name
+free-form exception
+user prompt
+model output
 ```
+
+Rule names and IDs must not be labels because user-created rules can create unbounded cardinality.
 
 ---
 
-## Audit API
+## Histogram boundaries
 
-Implement read-only endpoints:
+Use documented explicit histogram buckets suitable for local tool execution.
+
+Example seconds:
+
+```text
+0.001
+0.005
+0.01
+0.025
+0.05
+0.1
+0.25
+0.5
+1
+2.5
+5
+10
+30
+```
+
+Do not rely on arbitrary defaults without documenting them.
+
+---
+
+# Part 4: Logging correlation
+
+Extend structured logs to consistently include:
+
+```text
+correlation_id
+trace_id
+span_id
+service
+environment
+```
+
+Existing lifecycle logs must retain safe fields:
+
+```text
+call_id
+session_id
+tool_name
+tool_version
+status
+decision
+risk_level
+duration_ms
+error_code
+```
+
+Requirements:
+
+* missing trace context must not break logging;
+* redaction processor remains active;
+* raw payloads remain prohibited;
+* trace fields are serialized as normalized lowercase hex strings;
+* logging itself must not create additional spans.
+
+---
+
+# Part 5: Audit correlation
+
+Every newly created audit event related to an active request must contain:
+
+```text
+trace_id
+```
+
+Where useful, also store:
+
+```text
+correlation_id
+```
+
+Requirements:
+
+* replayed requests must not duplicate semantic audit events;
+* audit API may expose trace ID and correlation ID;
+* these identifiers must be queryable through bounded API filters;
+* do not expose span ID unless needed.
+
+Add filters:
 
 ```http
-GET /api/v1/audit-events
-GET /api/v1/sessions/{session_id}/audit-events
-GET /api/v1/tool-calls/{call_id}/audit-events
+GET /api/v1/audit-events?trace_id=...
+GET /api/v1/audit-events?correlation_id=...
 ```
 
-Support bounded pagination and event-type filtering.
-
-Do not expose update or delete endpoints.
+Validate identifier formats strictly.
 
 ---
 
-# Part 5: Persistent idempotent replay
+# Part 6: Jaeger and local infrastructure
 
-The current in-memory terminal response cache must be replaced or complemented with PostgreSQL-backed replay.
+Update Compose observability profile.
+
+Required service:
+
+```text
+jaeger
+```
+
+Expose:
+
+```text
+16686  Jaeger UI
+4317   OTLP gRPC
+4318   OTLP HTTP
+```
+
+ToolWatch should use OTLP HTTP by default.
 
 Requirements:
 
-* successful terminal sanitized result is persisted;
-* blocked terminal response is reconstructable;
-* rejected and failed terminal responses are reconstructable from safe metadata;
-* same idempotency key and same request hash returns the prior terminal response after process restart;
-* adapter must not execute again;
-* conflicting request hash still returns `idempotency_conflict`;
-* in-progress behavior remains fail-closed.
+* Jaeger remains optional under an observability profile;
+* API starts when Jaeger is unavailable;
+* exporter retries must not block request completion;
+* README documents how to open a trace in Jaeger;
+* development telemetry data is ephemeral.
 
-Do not persist raw output to support replay.
+Do not add Elasticsearch.
 
 ---
 
-# Database migration
+# Part 7: Sampling
 
-Create a migration after `0003`.
+Implement configurable parent-based ratio sampling.
 
-Add or alter:
-
-```text
-tool_calls
-tool_result_metadata
-risk_flags
-blocking_rules
-audit_events
-```
-
-Possible changes:
-
-### `tool_calls`
-
-Add:
+Default local development:
 
 ```text
-risk_level
-matched_rule_ids
-redacted_arguments
+1.0
 ```
 
-### `tool_result_metadata`
+Document recommended non-development behavior.
 
-Add:
+Security events must remain available through audit logs even when traces are unsampled.
 
-```text
-redacted_payload
-truncated
-```
+Do not use tracing as the authoritative security record.
 
-### `risk_flags`
-
-Create table with:
-
-```text
-id
-tool_call_id
-code
-severity
-message
-safe_evidence
-source
-created_at
-```
-
-### `blocking_rules`
-
-Create table.
-
-### `audit_events`
-
-Create append-only table.
-
-Requirements:
-
-* JSONB where appropriate;
-* named constraints;
-* explicit foreign keys;
-* indexes for common read paths;
-* timezone-aware timestamps;
-* upgrade and downgrade support;
-* no raw-payload columns.
-
-Manually inspect the migration.
+Audit remains the authoritative event history.
 
 ---
 
-# API execution response changes
+# Part 8: Telemetry self-protection
 
-Successful response may now include:
+Add one internal telemetry health status.
+
+Possible checks:
+
+* provider initialized;
+* exporter configuration valid;
+* latest export failure count where available.
+
+Do not make `/health/ready` fail merely because Jaeger is unavailable.
+
+Optionally expose safe status:
+
+```http
+GET /health/telemetry
+```
+
+Example:
 
 ```json
 {
-  "call_id": "call_...",
-  "status": "succeeded",
-  "decision": "allow",
-  "risk": "low",
-  "flags": [],
-  "result": {
-    "issues": []
-  }
+  "status": "degraded",
+  "tracing": "configured",
+  "exporter": "unavailable"
 }
 ```
 
-Flagged response:
-
-```json
-{
-  "call_id": "call_...",
-  "status": "succeeded",
-  "decision": "flag",
-  "risk": "high",
-  "flags": [
-    "sensitive_input"
-  ],
-  "result": {
-    "message_id": "msg_...",
-    "status": "accepted"
-  }
-}
-```
-
-Blocked response:
-
-```text
-403 Forbidden
-```
-
-```json
-{
-  "call_id": "call_...",
-  "status": "blocked",
-  "decision": "block",
-  "risk": "critical",
-  "flags": [
-    "destructive_sql"
-  ],
-  "matched_rules": [
-    "block-destructive-sql"
-  ],
-  "error": {
-    "code": "tool_call_blocked",
-    "message": "The tool call was blocked by a runtime safety rule.",
-    "correlation_id": "..."
-  }
-}
-```
-
-Do not expose rule internals or sensitive evidence.
+Do not expose exporter URLs with embedded credentials.
 
 ---
 
-# Configuration
+# Testing requirements
 
-Add:
+## Unit tests
 
-```text
-REDACTION_ENABLED=true
-REDACTION_REPLACEMENT=[REDACTED]
-REDACTION_FINGERPRINTS_ENABLED=true
-REDACTION_FINGERPRINT_KEY=<development-value>
-MAX_REDACTION_DEPTH=20
-MAX_REDACTION_NODES=10000
-STORE_REDACTED_ARGUMENTS=true
-STORE_REDACTED_RESULTS=true
-```
+Cover:
 
-`.env.example` may contain an explicit development-only placeholder.
-
-Document that production deployments need a strong independent key.
+* telemetry enabled and disabled;
+* correlation ID validation;
+* trace ID formatting;
+* safe attribute allowlist;
+* forbidden attribute rejection;
+* span naming;
+* metric label validation;
+* no-op provider;
+* provider shutdown.
 
 ---
 
-# Required tests
+## Trace tests
 
-## Redaction unit tests
-
-Cover:
-
-* sensitive key;
-* camelCase sensitive key;
-* nested dictionary;
-* nested list;
-* bearer token;
-* JWT-like token;
-* private key;
-* credentials in URL;
-* embedded secret;
-* repeated secret fingerprint;
-* idempotency;
-* maximum depth;
-* maximum nodes;
-* non-sensitive similar field names;
-* empty values;
-* already-redacted values.
-
-## Property-based tests
-
-Required properties:
-
-```text
-redact(redact(x)) == redact(x)
-```
-
-```text
-known secret not in serialize(redact(x))
-```
-
-```text
-redaction preserves JSON compatibility
-```
-
-```text
-redaction never increases nesting depth
-```
-
-## Risk-engine tests
+Use in-memory exporters.
 
 Cover:
 
-* base risk preserved;
-* sensitive input raises risk;
-* SELECT low;
-* UPDATE high;
-* DELETE high or critical;
-* DROP critical;
-* mixed case;
-* whitespace;
-* multiple statements;
-* prompt-injection heuristic;
-* unknown operation.
-
-## Rule-engine tests
-
-Cover:
-
-* priority;
-* block precedence;
-* disabled rule ignored;
-* tool exact match;
-* tool pattern;
-* flag match;
-* risk threshold;
-* argument path;
-* malformed conditions;
-* deterministic result;
-* no arbitrary expression execution.
-
-## Execution tests
-
-Cover:
-
-* redacted arguments persisted;
-* redacted result persisted;
-* raw payload absent;
-* safe call allowed;
-* medium call flagged;
-* destructive SQL blocked;
-* blocked adapter not invoked;
-* suspicious output flagged;
-* result replay after creating a new application instance;
-* conflicting idempotency request still rejected.
-
-## Audit tests
-
-Cover:
-
-* expected lifecycle events;
-* blocked lifecycle;
-* failed lifecycle;
-* timeout lifecycle;
-* no duplicate events on response replay;
-* raw payload absent;
-* stable ordering;
-* pagination.
-
-## PostgreSQL integration tests
-
-Cover:
-
-* migration upgrade;
-* downgrade and upgrade;
-* JSONB persistence;
-* risk-flag foreign keys;
-* rule uniqueness;
-* audit-event indexes;
-* persistent replay;
-* concurrent same-key request;
-* blocked call state.
-
-## Logging security tests
-
-Inject a unique test secret and assert it is absent from:
-
-* captured logs;
-* public errors;
-* persisted arguments;
-* persisted results;
-* audit payloads;
-* risk evidence.
+* request span exists;
+* execute-tool span exists;
+* correct parent-child relationships;
+* safe required attributes;
+* allowed operation status;
+* blocked call has no adapter execution span;
+* failed and timed-out calls set error status;
+* replay is marked;
+* tracing disabled creates no exported spans;
+* trace propagation accepts valid W3C headers;
+* malformed trace headers fail safely.
 
 ---
 
-# Performance requirements
+## Telemetry security tests
 
-Redaction and rule evaluation run in the request path.
+Inject unique secrets into:
 
-Local engineering targets:
+* arguments;
+* results;
+* prompts;
+* adapter exceptions;
+* rule evidence.
 
-```text
-redaction of 64 KB JSON: p95 < 15 ms
-risk classification: p95 < 10 ms
-rule evaluation for 100 rules: p95 < 10 ms
+Assert the secret is absent from:
+
+* span names;
+* span attributes;
+* span events;
+* metric labels;
+* metric values where relevant;
+* structured logs;
+* audit correlation fields;
+* exporter error logs.
+
+---
+
+## Metrics tests
+
+Cover:
+
+* successful call counter;
+* blocked call counter;
+* failed call counter;
+* timeout counter;
+* replay counter;
+* redaction counter;
+* risk flag counter;
+* rule-match counter;
+* histogram observations;
+* no high-cardinality labels;
+* metrics endpoint disabled;
+* metrics endpoint enabled.
+
+Avoid tests that depend on global metric state leaking between cases.
+
+---
+
+## Integration tests
+
+Use PostgreSQL and in-memory telemetry exporter.
+
+Cover:
+
+* complete successful request trace;
+* blocked request trace;
+* timeout trace;
+* replay trace;
+* audit event trace correlation;
+* trace ID persisted safely;
+* no duplicate audit events;
+* exporter failure does not fail request.
+
+---
+
+## Compose smoke test
+
+Start:
+
+```bash
+docker compose --profile observability up --build
 ```
 
-These are benchmark targets, not production SLAs.
+Verify:
 
-Add benchmarks, but do not make unstable microbenchmarks block CI unless the repository already has a stable strategy.
+* API healthy;
+* PostgreSQL healthy;
+* Jaeger healthy;
+* one tool call generates a visible trace;
+* trace includes execute-tool span;
+* no payload body is present in Jaeger.
+
+Do not claim Jaeger visibility unless manually or programmatically verified.
+
+---
+
+# Performance targets
+
+Telemetry overhead targets for local development:
+
+```text
+tracing enabled, in-memory exporter:
+p95 additional overhead < 5 ms
+
+metrics recording:
+p95 additional overhead < 1 ms
+```
+
+Use representative execution tests.
+
+These are engineering targets, not public SLAs.
+
+Telemetry benchmark failures should not block CI unless stable enough.
+
+---
+
+# OpenAPI and API changes
+
+Document:
+
+```text
+X-Correlation-ID response header
+/metrics
+optional /health/telemetry
+audit trace/correlation filters
+```
+
+Do not expose internal telemetry configuration through API.
 
 ---
 
@@ -1298,58 +848,54 @@ Add benchmarks, but do not make unstable microbenchmarks block CI unless the rep
 
 Add:
 
-* redaction example;
-* allowed, flagged, and blocked examples;
-* rule seed command;
-* audit API examples;
-* persistent replay explanation;
-* warning that heuristic prompt-injection detection is not a guarantee.
+* observability architecture;
+* how to start Jaeger;
+* how to execute a test call;
+* how to locate its trace;
+* metrics endpoint;
+* privacy guarantees;
+* sampling notes.
 
-## Architecture
+## `docs/architecture.md`
 
 Document:
 
-* raw trusted execution boundary;
-* redaction boundary;
-* risk-classification pipeline;
-* pre-execution and post-execution rules;
-* audit-event flow;
-* persistent replay.
+* telemetry adapter boundary;
+* span hierarchy;
+* logs/traces/audit correlation;
+* why audit is authoritative;
+* failure behavior when exporter is down.
 
-## Threat model
+## `docs/threat-model.md`
 
 Add:
 
-* secret leakage;
-* redaction bypass;
-* regex denial of service;
-* misleading risk evidence;
-* rule poisoning;
-* rule precedence errors;
-* malicious tool output;
-* indirect prompt injection;
-* audit-log manipulation;
-* sensitive data in observability attributes.
+* secret leakage through telemetry;
+* high-cardinality denial of service;
+* malicious trace headers;
+* oversized baggage;
+* exporter credential leakage;
+* sensitive exception stack traces;
+* spoofed correlation IDs;
+* telemetry backend outage.
 
-## Testing
+## `docs/testing.md`
 
 Document:
 
-* property-based redaction tests;
-* rule-engine tests;
-* audit-event tests;
-* persistent replay tests.
+* in-memory span exporter;
+* isolated meter providers;
+* telemetry security regression tests;
+* Jaeger smoke test.
 
 ## ADR
 
-Create ADRs for:
+Create an ADR covering:
 
-1. deterministic security decisions;
-2. sanitized payload persistence;
-3. HMAC-based secret fingerprints;
-4. pre-execution versus post-execution rules.
-
-Combine closely related decisions if appropriate.
+* OpenTelemetry as the telemetry abstraction;
+* audit log as authoritative security history;
+* safe attribute allowlist;
+* experimental GenAI semantic conventions isolated behind adapter.
 
 ---
 
@@ -1358,18 +904,18 @@ Combine closely related decisions if appropriate.
 Do not implement:
 
 * Ollama;
-* model prompts;
-* agent loop;
+* LLM spans;
+* model token metrics;
 * MCP;
-* OpenTelemetry GenAI spans;
-* approval workflows;
+* dashboard;
+* real integrations;
 * authentication;
-* external policy engine;
-* real tools;
-* arbitrary network access;
-* anomaly ML;
-* recovery worker;
-* retry queue.
+* approval workflows;
+* distributed tracing across external tools;
+* log backend such as Loki;
+* Elasticsearch;
+* production observability backend;
+* alerting rules.
 
 ---
 
@@ -1377,29 +923,27 @@ Do not implement:
 
 The milestone is complete only when:
 
-1. Recursive deterministic redaction exists.
-2. Raw secrets never enter persisted sanitized payloads.
-3. Raw arguments and results remain absent from logs.
-4. Redacted arguments and results are stored.
-5. Successful responses can be replayed after application restart.
-6. Risk levels and risk flags are persisted.
-7. Risk cannot be lowered below registered base risk.
-8. Blocking rules are deterministic.
-9. Destructive SQL is blocked before adapter execution.
-10. Sensitive email calls are flagged.
-11. Suspicious tool output is flagged.
-12. Blocked adapters are never invoked.
-13. Audit events cover the complete lifecycle.
-14. Audit events expose no raw payloads.
-15. Rule-management API works.
-16. Audit read APIs work.
-17. Migrations upgrade and downgrade successfully.
-18. Unit, property, API, integration, concurrency, and security tests pass.
-19. `make check` passes.
-20. Docker Compose remains healthy.
-21. Existing health, registry, session, and execution behavior remains compatible.
-22. Documentation and threat model are updated.
-23. Ollama and real external tools remain unimplemented.
+1. OpenTelemetry can be enabled and disabled.
+2. FastAPI requests produce server spans.
+3. Tool execution produces `execute_tool` spans.
+4. Span hierarchy is correct.
+5. Blocked calls do not produce adapter execution spans.
+6. Safe attributes are allowlisted.
+7. Raw prompts, arguments, results, and secrets never enter telemetry.
+8. Metrics endpoint exposes required metrics.
+9. Metrics have bounded labels.
+10. Logs include trace and correlation IDs.
+11. Audit events can be correlated with traces.
+12. Audit remains authoritative when sampling disables traces.
+13. Exporter failure does not fail requests.
+14. Jaeger works through the Compose observability profile.
+15. Tool traces are visible in Jaeger.
+16. Unit, trace, metrics, security, and integration tests pass.
+17. `make check` passes.
+18. Docker Compose remains healthy.
+19. Existing execution and security behavior remains compatible.
+20. Documentation and threat model are updated.
+21. Ollama, dashboard, and MCP remain unimplemented.
 
 ---
 
@@ -1407,57 +951,53 @@ The milestone is complete only when:
 
 Before coding:
 
-1. inspect the execution pipeline and persistence boundaries;
-2. inspect every logging and error path;
-3. summarize the proposed redaction algorithm;
-4. summarize fingerprint-key handling;
-5. summarize risk detectors;
-6. summarize rule evaluation and precedence;
-7. summarize audit-event transaction behavior;
-8. summarize persistent replay design;
-9. identify compatibility changes to existing APIs;
+1. inspect existing telemetry placeholders;
+2. inspect all logging paths;
+3. inspect audit-event creation;
+4. identify every candidate span;
+5. define the safe attribute allowlist;
+6. define metric labels and cardinality;
+7. describe provider lifecycle;
+8. describe exporter-failure behavior;
+9. identify GenAI semantic-convention isolation;
 10. proceed without waiting unless genuinely blocked.
 
 During implementation:
 
-1. implement redaction and tests first;
-2. implement risk classification;
-3. implement rule domain and evaluator;
-4. add persistence migration;
-5. integrate pre-execution rules;
-6. integrate output redaction and post-execution flags;
-7. add audit events;
-8. implement persistent replay;
-9. add APIs last;
-10. never retain raw payloads for debugging.
+1. implement telemetry configuration and no-op providers;
+2. implement safe attribute handling;
+3. implement request correlation;
+4. instrument tool execution;
+5. instrument application operations;
+6. add metrics;
+7. correlate logs and audit events;
+8. add Jaeger configuration;
+9. implement tests before documentation;
+10. never add raw payloads for debugging.
 
 Before completion:
 
-1. run focused tests after each stage;
-2. run property-based tests;
+1. run focused telemetry tests;
+2. run secret-leak regression tests;
 3. run PostgreSQL integration tests;
-4. test migration upgrade/downgrade/upgrade;
-5. run `alembic check`;
-6. run `make check`;
-7. run Docker Compose smoke tests;
-8. inject a unique test secret and search:
+4. run `make check`;
+5. run Compose with observability profile;
+6. generate one allowed and one blocked tool call;
+7. inspect Jaeger spans manually or programmatically;
+8. verify no payloads or secrets appear;
+9. inspect `/metrics` for forbidden labels;
+10. inspect Git diff;
+11. report:
 
-   * database rows;
-   * logs;
-   * API output;
-   * audit events;
-9. inspect Git diff;
-10. report:
-
-* created and modified files;
-* migration details;
-* redaction design;
-* risk and rule behavior;
-* audit design;
-* replay behavior;
-* commands executed;
-* test results;
+* files changed;
+* provider and exporter design;
+* span hierarchy;
+* metrics and labels;
+* correlation design;
+* commands run;
+* tests;
+* Jaeger verification;
 * unverified checks;
 * remaining risks.
 
-Do not claim a check passed unless it actually ran successfully.
+Do not claim a check passed unless it actually ran.

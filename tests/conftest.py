@@ -10,9 +10,12 @@ from toolwatch.infrastructure.database.engine import dispose_engine, get_engine
 
 
 @pytest.fixture(autouse=True)
-async def reset_cached_dependencies() -> AsyncIterator[None]:
+async def reset_cached_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[None]:
     """Keep environment-derived dependencies isolated between tests."""
 
+    monkeypatch.setenv("OTEL_ENABLED", "false")
     get_settings.cache_clear()
     get_adapter_registry.cache_clear()
     get_terminal_response_cache.cache_clear()

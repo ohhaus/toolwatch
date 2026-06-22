@@ -31,6 +31,12 @@ blocked or invalid calls must never reach downstream adapters.
 | Rule poisoning or precedence error | A low-priority allow weakens a destructive block | Validate a finite condition schema; deterministic ordering; `block > flag > allow`; risk never decreases |
 | Audit-log manipulation | Untrusted payload is copied into an audit event | Construct audit payloads from server-controlled IDs, enums, counts, codes, and redacted metadata only |
 | Sensitive observability attributes | Secret becomes a log or trace attribute | Keep lifecycle logs ID/status-only; full GenAI tracing remains out of scope |
+| Telemetry payload leakage | Prompt, argument, result, rule evidence, or exception text enters a span or metric | Strict attribute/label allowlists; no span events or exception recording; unique-secret regression tests |
+| Telemetry cardinality exhaustion | IDs, URLs, rule names, or destinations become Prometheus labels | Fixed label schema with bounded lifecycle and trusted-registry values; reject unknown labels |
+| Malicious propagation headers | Forged or oversized trace/baggage headers consume resources or spoof correlation | Accept standard W3C trace headers only; do not accept baggage; canonical UUID correlation IDs with a hard length bound |
+| Exporter credential disclosure | OTLP failure logs an endpoint containing credentials | Suppress exporter diagnostics and emit only fixed telemetry error codes |
+| Sensitive stack trace | Adapter or database exception is recorded by automatic instrumentation | Disable exception events, messages, and stack traces; record safe exception type and stable error code only |
+| Telemetry backend outage | Jaeger is unavailable during execution | Fail telemetry open, keep audit authoritative, expose safe degraded status, never fail readiness solely for Jaeger |
 | Payload exhaustion | Deep or oversized JSON consumes memory or storage | Canonical byte, depth, and string limits before execution and before return |
 | Crash after side effect | Process exits before terminal state commits | Idempotency reduces replay risk; fail closed on unresolved keys; document lack of distributed transaction |
 
@@ -48,8 +54,11 @@ and runs as a non-root user.
 Tool execution is limited to three trusted in-process mock adapters with no external
 network, email, or SQL effects. Recursive redaction, deterministic risk/rules,
 sanitized-payload persistence, append-only application audit events, and durable replay
-are present. LLM integration, authentication, approvals, external policy engines, full
-OpenTelemetry GenAI instrumentation, and dashboard rendering are not present.
+are present. LLM integration, authentication, approvals, model telemetry, and dashboard
+rendering are not present. Observability v1 accepts W3C Trace Context, emits allowlisted
+execution spans, and exposes bounded Prometheus metrics. It never accepts baggage,
+payload bodies, arbitrary URLs, or exception text into telemetry. Jaeger is optional and
+its availability does not gate the API.
 
 Known limitations include heuristic secret and prompt-injection detection, Python regex
 execution despite conservative pattern validation, cooperative timeout cancellation, and

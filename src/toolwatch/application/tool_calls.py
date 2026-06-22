@@ -59,6 +59,10 @@ from toolwatch.security.redaction import DeterministicRedactor, RedactionLimitEx
 from toolwatch.security.risk import classify_input, classify_output
 from toolwatch.security.rules import evaluate_rules
 from toolwatch.security.schema import validate_instance
+from toolwatch.telemetry import TelemetryRuntime
+from toolwatch.telemetry.context import current_correlation
+from toolwatch.telemetry.metrics import Metrics
+from toolwatch.telemetry.tracing import Tracing
 
 logger = logging.getLogger("toolwatch.tool_calls")
 IDEMPOTENCY_CONSTRAINT = "uq_tool_calls_idempotency_key"
@@ -133,11 +137,16 @@ class ToolCallService:
         adapters: ToolAdapterRegistry,
         settings: Settings,
         response_cache: TerminalResponseCache | None = None,
+        telemetry: TelemetryRuntime | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._adapters = adapters
         self._settings = settings
         self._response_cache = response_cache
+        self._telemetry = telemetry or TelemetryRuntime(
+            tracing=Tracing(None),
+            metrics=Metrics(enabled=False),
+        )
         self._redactor = DeterministicRedactor(
             replacement=settings.redaction_replacement,
             fingerprint_key=(
@@ -154,22 +163,55 @@ class ToolCallService:
     async def execute(self, request: ExecuteToolCall) -> ToolCallExecution:
         """Execute or persistently replay one validated trusted call."""
 
-        arguments, canonical_arguments = self._canonical_arguments(request.arguments)
+        with self._telemetry.tracing.span("toolwatch.execute_tool_call") as root_span:
+            return await self._execute(request, root_span)
+
+    async def _execute(self, request: ExecuteToolCall, root_span: object) -> ToolCallExecution:
+        del root_span
+        with self._telemetry.tracing.span("toolwatch.validate_arguments") as payload_span:
+            try:
+                arguments, canonical_arguments = self._canonical_arguments(request.arguments)
+            except Exception as exc:
+                payload_span.set_error(getattr(exc, "code", "invalid_arguments"), type(exc))
+                self._telemetry.metrics.counter(
+                    "toolwatch_validation_failures_total",
+                    {"error_code": getattr(exc, "code", "invalid_arguments")},
+                )
+                raise
         canonical_request_hash = request_hash(
             session_id=request.session_id,
             tool_name=request.tool_name,
             tool_version=request.tool_version,
             canonical_arguments=canonical_arguments.encoded,
         )
-        existing = await self._existing_outcome(request.idempotency_key, canonical_request_hash)
+        with self._telemetry.tracing.span("toolwatch.replay_tool_call") as replay_span:
+            with self._telemetry.metrics.timer(
+                "toolwatch_db_operation_duration_seconds",
+                {"operation": "lookup_replay"},
+            ):
+                existing = await self._existing_outcome(
+                    request.idempotency_key,
+                    canonical_request_hash,
+                )
         if existing is not None:
+            replay_span.set_attributes(
+                {
+                    "toolwatch.replayed": True,
+                    "toolwatch.call.status": existing.call.status.value,
+                }
+            )
+            self._record_terminal_metrics(existing, replayed=True)
             return existing
 
-        call, tool = await self._create_received(
-            request,
-            arguments_hash=canonical_arguments.sha256,
-            canonical_request_hash=canonical_request_hash,
-        )
+        with self._telemetry.metrics.timer(
+            "toolwatch_db_operation_duration_seconds",
+            {"operation": "create_received"},
+        ):
+            call, tool = await self._create_received(
+                request,
+                arguments_hash=canonical_arguments.sha256,
+                canonical_request_hash=canonical_request_hash,
+            )
         self._log("tool_call_received", call, tool)
         validating = await self._transition(
             call,
@@ -177,28 +219,69 @@ class ToolCallService:
             audit_type=None,
         )
 
-        if validate_instance(tool.input_schema, arguments):
+        with self._telemetry.tracing.span("toolwatch.validate_arguments") as validation_span:
+            validation_issues = validate_instance(tool.input_schema, arguments)
+            validation_span.set_attributes(
+                {
+                    "validation.valid": not validation_issues,
+                    "validation.error_count": len(validation_issues),
+                }
+            )
+        if validation_issues:
             await self._reject(validating, tool, "invalid_tool_arguments")
+            self._telemetry.metrics.counter(
+                "toolwatch_validation_failures_total",
+                {"error_code": "invalid_tool_arguments"},
+            )
             raise InvalidToolArguments
 
-        try:
-            redacted_arguments = self._redactor.redact(arguments)
-        except RedactionLimitExceeded:
-            await self._reject(validating, tool, "tool_payload_too_deep")
-            raise ToolPayloadTooDeep from None
+        with self._telemetry.tracing.span("toolwatch.redact_arguments") as redaction_span:
+            try:
+                redacted_arguments = self._redactor.redact(arguments)
+            except RedactionLimitExceeded:
+                redaction_span.set_error("tool_payload_too_deep", RedactionLimitExceeded)
+                await self._reject(validating, tool, "tool_payload_too_deep")
+                raise ToolPayloadTooDeep from None
+            redaction_span.set_attributes(
+                {"redaction.finding_count": len(redacted_arguments.findings)}
+            )
+            self._telemetry.metrics.counter(
+                "toolwatch_redactions_total",
+                amount=len(redacted_arguments.findings),
+            )
         if not isinstance(redacted_arguments.value, dict):
             await self._reject(validating, tool, "invalid_tool_arguments")
             raise InvalidToolArguments
 
-        input_assessment = classify_input(tool, arguments, redacted_arguments.findings)
-        evaluating, input_flags, input_rule_names = await self._evaluate_input(
-            validating,
-            tool,
-            redacted_arguments=redacted_arguments.value,
-            redaction_count=len(redacted_arguments.findings),
-            risk_level=input_assessment.level,
-            flags=list(input_assessment.flags),
-        )
+        with self._telemetry.tracing.span("toolwatch.classify_risk") as risk_span:
+            input_assessment = classify_input(tool, arguments, redacted_arguments.findings)
+            risk_span.set_attributes({"risk.level": input_assessment.level.value})
+        with self._telemetry.tracing.span("toolwatch.evaluate_rules") as rules_span:
+            evaluating, input_flags, input_rule_names = await self._evaluate_input(
+                validating,
+                tool,
+                redacted_arguments=redacted_arguments.value,
+                redaction_count=len(redacted_arguments.findings),
+                risk_level=input_assessment.level,
+                flags=list(input_assessment.flags),
+            )
+            rules_span.set_attributes(
+                {
+                    "rule.match_count": len(input_rule_names),
+                    "decision": evaluating.decision.value,
+                }
+            )
+        for flag in input_flags:
+            self._telemetry.metrics.counter(
+                "toolwatch_risk_flags_total",
+                {"flag_code": flag.code.value, "risk_level": flag.severity.value},
+            )
+        if input_rule_names:
+            self._telemetry.metrics.counter(
+                "toolwatch_rule_matches_total",
+                {"rule_action": evaluating.decision.value},
+                len(input_rule_names),
+            )
         if evaluating.status is ToolCallStatus.BLOCKED:
             outcome = ToolCallExecution(
                 call=evaluating,
@@ -208,6 +291,7 @@ class ToolCallService:
                 matched_rules=tuple(input_rule_names),
             )
             self._log("tool_call_blocked", evaluating, tool)
+            self._record_terminal_metrics(outcome)
             raise ToolCallBlocked(outcome)
 
         executing = await self._transition(
@@ -229,39 +313,74 @@ class ToolCallService:
             tool_version=tool.version,
             adapter_config=tool.adapter_config,
         )
-        try:
-            raw_result = await asyncio.wait_for(
-                adapter.execute(arguments=arguments, context=context),
-                timeout=self._timeout_for(tool),
-            )
-        except TimeoutError:
-            terminal = await self._transition(
-                executing,
-                ToolCallStatus.TIMED_OUT,
-                error_code="tool_timeout",
-                error_message_safe="The trusted tool adapter timed out.",
-                audit_type=AuditEventType.TOOL_CALL_TIMED_OUT,
-            )
-            self._log("tool_call_timed_out", terminal, tool)
-            raise ToolTimeout from None
-        except AdapterExecutionError as exc:
-            public_error = (
-                MockQueryNotSupported
-                if exc.code == "mock_query_not_supported"
-                else ToolExecutionFailed
-            )
-            await self._fail(executing, tool, exc.code)
-            raise public_error from None
-        except Exception:
-            await self._fail(executing, tool, "tool_execution_failed")
-            raise ToolExecutionFailed from None
+        with self._telemetry.tracing.span(
+            f"execute_tool {tool.name}",
+            attributes=self._tool_span_attributes(executing, tool, replayed=False),
+        ) as execute_span:
+            try:
+                raw_result = await asyncio.wait_for(
+                    adapter.execute(arguments=arguments, context=context),
+                    timeout=self._timeout_for(tool),
+                )
+                execute_span.set_attributes({"toolwatch.call.status": "succeeded"})
+            except TimeoutError:
+                execute_span.set_error("tool_timeout", TimeoutError)
+                execute_span.set_attributes({"toolwatch.call.status": "timed_out"})
+                terminal = await self._transition(
+                    executing,
+                    ToolCallStatus.TIMED_OUT,
+                    error_code="tool_timeout",
+                    error_message_safe="The trusted tool adapter timed out.",
+                    audit_type=AuditEventType.TOOL_CALL_TIMED_OUT,
+                )
+                self._log("tool_call_timed_out", terminal, tool)
+                self._record_terminal_metrics(
+                    ToolCallExecution(call=terminal, tool=tool, result=None)
+                )
+                raise ToolTimeout from None
+            except AdapterExecutionError as exc:
+                execute_span.set_error(exc.code, type(exc))
+                execute_span.set_attributes({"toolwatch.call.status": "failed"})
+                public_error = (
+                    MockQueryNotSupported
+                    if exc.code == "mock_query_not_supported"
+                    else ToolExecutionFailed
+                )
+                await self._fail(executing, tool, exc.code)
+                raise public_error from None
+            except Exception as exc:
+                execute_span.set_error("tool_execution_failed", type(exc))
+                execute_span.set_attributes({"toolwatch.call.status": "failed"})
+                await self._fail(executing, tool, "tool_execution_failed")
+                raise ToolExecutionFailed from None
 
-        canonical_result = await self._canonical_result(raw_result, executing, tool)
-        try:
-            redacted_result = self._redactor.redact(canonical_result.value)
-        except RedactionLimitExceeded:
-            await self._fail(executing, tool, "tool_payload_too_deep")
-            raise ToolResultPayloadTooDeep from None
+        with self._telemetry.tracing.span("toolwatch.validate_result") as result_validation_span:
+            canonical_result = await self._canonical_result(raw_result, executing, tool)
+            schema_valid = tool.output_schema is None or not validate_instance(
+                tool.output_schema, canonical_result.value
+            )
+            result_validation_span.set_attributes(
+                {
+                    "validation.valid": schema_valid,
+                    "validation.error_count": 0 if schema_valid else 1,
+                }
+            )
+            if not schema_valid:
+                result_validation_span.set_error("invalid_tool_result")
+        with self._telemetry.tracing.span("toolwatch.redact_result") as result_redaction_span:
+            try:
+                redacted_result = self._redactor.redact(canonical_result.value)
+            except RedactionLimitExceeded:
+                result_redaction_span.set_error("tool_payload_too_deep", RedactionLimitExceeded)
+                await self._fail(executing, tool, "tool_payload_too_deep")
+                raise ToolResultPayloadTooDeep from None
+            result_redaction_span.set_attributes(
+                {"redaction.finding_count": len(redacted_result.findings)}
+            )
+            self._telemetry.metrics.counter(
+                "toolwatch_redactions_total",
+                amount=len(redacted_result.findings),
+            )
         sanitized_result = self._canonical_sanitized_result(redacted_result.value)
         output_assessment = classify_output(
             sanitized_result.value,
@@ -269,9 +388,6 @@ class ToolCallService:
             executing.risk_level,
         )
         output_flags = list(output_assessment.flags)
-        schema_valid = tool.output_schema is None or not validate_instance(
-            tool.output_schema, canonical_result.value
-        )
         if not schema_valid:
             decision = ToolCallDecision.FLAG if output_flags else executing.decision
             metadata = ToolResultMetadata(
@@ -295,6 +411,7 @@ class ToolCallService:
                 error_message_safe="The trusted adapter returned an invalid result.",
             )
             self._log("tool_call_failed", terminal, tool)
+            self._record_terminal_metrics(ToolCallExecution(call=terminal, tool=tool, result=None))
             raise InvalidToolResult
 
         async with self._uow_factory() as uow:
@@ -307,6 +424,17 @@ class ToolCallService:
             arguments=executing.redacted_arguments,
             result_phase=True,
         )
+        for flag in output_flags:
+            self._telemetry.metrics.counter(
+                "toolwatch_risk_flags_total",
+                {"flag_code": flag.code.value, "risk_level": flag.severity.value},
+            )
+        if result_evaluation.matches:
+            self._telemetry.metrics.counter(
+                "toolwatch_rule_matches_total",
+                {"rule_action": result_evaluation.action.value},
+                len(result_evaluation.matches),
+            )
         all_flags = [*input_flags, *output_flags]
         decision = executing.decision
         if output_flags or result_evaluation.action is RuleAction.FLAG:
@@ -328,17 +456,24 @@ class ToolCallService:
             schema_valid=True,
             truncated=False,
         )
-        terminal = await self._finalize(
-            executing,
-            ToolCallStatus.SUCCEEDED,
-            metadata=metadata,
-            flags=output_flags,
-            matched_rule_ids=matched_ids,
-            decision=decision,
-            risk_level=output_assessment.level,
-            redaction_count=len(redacted_result.findings),
-            matched_rule_names=tuple(match.rule_name for match in result_evaluation.matches),
-        )
+        with self._telemetry.tracing.span("toolwatch.persist_terminal_result"):
+            with self._telemetry.metrics.timer(
+                "toolwatch_db_operation_duration_seconds",
+                {"operation": "persist_terminal"},
+            ):
+                terminal = await self._finalize(
+                    executing,
+                    ToolCallStatus.SUCCEEDED,
+                    metadata=metadata,
+                    flags=output_flags,
+                    matched_rule_ids=matched_ids,
+                    decision=decision,
+                    risk_level=output_assessment.level,
+                    redaction_count=len(redacted_result.findings),
+                    matched_rule_names=tuple(
+                        match.rule_name for match in result_evaluation.matches
+                    ),
+                )
         response = ToolCallExecution(
             call=terminal,
             tool=tool,
@@ -347,6 +482,7 @@ class ToolCallService:
             matched_rules=matched_names,
         )
         self._log("tool_call_succeeded", terminal, tool)
+        self._record_terminal_metrics(response)
         return response
 
     async def get(self, call_id: UUID) -> ToolCallDetail:
@@ -530,6 +666,7 @@ class ToolCallService:
                     self._audit(call, tool, AuditEventType.TOOL_CALL_RECEIVED)
                 )
                 await uow.commit()
+                self._telemetry.metrics.counter("toolwatch_audit_events_total")
             except RepositoryConflict as exc:
                 if exc.constraint_name == IDEMPOTENCY_CONSTRAINT:
                     raise IdempotencyConflict from None
@@ -618,6 +755,10 @@ class ToolCallService:
                 events.append(self._audit(evaluating, tool, AuditEventType.TOOL_CALL_BLOCKED))
             await uow.audit_events.create_many(events)
             await uow.commit()
+            self._telemetry.metrics.counter(
+                "toolwatch_audit_events_total",
+                amount=len(events),
+            )
         return evaluating, bound_flags, [match.rule_name for match in evaluation.matches]
 
     async def _transition(
@@ -644,6 +785,8 @@ class ToolCallService:
                     raise ToolCallNotFound
                 await uow.audit_events.create(self._audit(changed, tool, audit_type))
             await uow.commit()
+            if audit_type is not None:
+                self._telemetry.metrics.counter("toolwatch_audit_events_total")
         return changed
 
     async def _finalize(
@@ -714,6 +857,10 @@ class ToolCallService:
             )
             await uow.audit_events.create_many(events)
             await uow.commit()
+            self._telemetry.metrics.counter(
+                "toolwatch_audit_events_total",
+                amount=len(events),
+            )
         return terminal
 
     async def _reject(self, call: ToolCall, tool: ToolDefinition, code: str) -> None:
@@ -726,7 +873,7 @@ class ToolCallService:
         )
         self._log("tool_call_rejected", terminal, tool)
 
-    async def _fail(self, call: ToolCall, tool: ToolDefinition, code: str) -> None:
+    async def _fail(self, call: ToolCall, tool: ToolDefinition, code: str) -> ToolCall:
         terminal = await self._transition(
             call,
             ToolCallStatus.FAILED,
@@ -735,6 +882,8 @@ class ToolCallService:
             audit_type=AuditEventType.TOOL_CALL_FAILED,
         )
         self._log("tool_call_failed", terminal, tool)
+        self._record_terminal_metrics(ToolCallExecution(call=terminal, tool=tool, result=None))
+        return terminal
 
     def _timeout_for(self, tool: ToolDefinition) -> float:
         configured = tool.adapter_config.get("timeout_seconds")
@@ -798,6 +947,8 @@ class ToolCallService:
             tool_call_id=call.id,
             event_type=event_type,
             payload_redacted=payload,
+            trace_id=current_correlation().trace_id,
+            correlation_id=current_correlation().correlation_id,
         )
 
     @staticmethod
@@ -810,7 +961,69 @@ class ToolCallService:
                 "tool_name": tool.name,
                 "tool_version": tool.version,
                 "status": call.status.value,
+                "decision": call.decision.value,
+                "risk_level": call.risk_level.value,
                 "duration_ms": call.duration_ms,
                 "error_code": call.error_code,
             },
         )
+
+    @staticmethod
+    def _tool_span_attributes(
+        call: ToolCall,
+        tool: ToolDefinition,
+        *,
+        replayed: bool,
+    ) -> dict[str, object]:
+        return {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": tool.name,
+            "gen_ai.tool.type": "function",
+            "toolwatch.tool.version": tool.version,
+            "toolwatch.tool.adapter_type": tool.adapter_type,
+            "toolwatch.risk.level": call.risk_level.value,
+            "toolwatch.decision": call.decision.value,
+            "toolwatch.call.status": call.status.value,
+            "toolwatch.replayed": replayed,
+        }
+
+    def _record_terminal_metrics(
+        self,
+        execution: ToolCallExecution,
+        *,
+        replayed: bool = False,
+    ) -> None:
+        call = execution.call
+        tool = execution.tool
+        labels = {
+            "tool_name": tool.name,
+            "tool_version": tool.version,
+            "adapter_type": tool.adapter_type,
+            "status": call.status.value,
+            "decision": call.decision.value,
+            "risk_level": call.risk_level.value,
+            "replayed": str(replayed or execution.replayed).lower(),
+        }
+        self._telemetry.metrics.counter("toolwatch_tool_calls_total", labels)
+        if call.duration_ms is not None:
+            self._telemetry.metrics.histogram(
+                "toolwatch_tool_call_duration_seconds",
+                call.duration_ms / 1000,
+                labels,
+            )
+        if call.status is ToolCallStatus.BLOCKED:
+            self._telemetry.metrics.counter("toolwatch_tool_calls_blocked_total", labels)
+        if call.status is ToolCallStatus.TIMED_OUT:
+            self._telemetry.metrics.counter("toolwatch_tool_timeouts_total", labels)
+        if call.status is ToolCallStatus.FAILED:
+            self._telemetry.metrics.counter(
+                "toolwatch_tool_calls_failed_total",
+                {
+                    "tool_name": tool.name,
+                    "tool_version": tool.version,
+                    "adapter_type": tool.adapter_type,
+                    "error_code": call.error_code or "unknown",
+                },
+            )
+        if replayed or execution.replayed:
+            self._telemetry.metrics.counter("toolwatch_tool_calls_replayed_total", labels)
