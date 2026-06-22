@@ -163,3 +163,43 @@ class BlockingRuleAlreadyExists(ApplicationError):
 
     code = "blocking_rule_already_exists"
     status_code = 409
+
+
+class AgentRunNotFound(ApplicationError):
+    code = "agent_run_not_found"
+    status_code = 404
+
+
+class AgentProviderNotAllowed(ApplicationError):
+    code = "agent_provider_not_allowed"
+    status_code = 422
+
+
+class AgentModelNotAllowed(ApplicationError):
+    code = "agent_model_not_allowed"
+    status_code = 422
+
+
+class AgentToolSchemaError(ApplicationError):
+    code = "agent_tool_schema_error"
+    status_code = 422
+
+
+class AgentLoopFailure(ApplicationError):
+    code = "agent_provider_error"
+    status_code = 502
+
+    def __init__(self, code: str = "agent_provider_error") -> None:
+        super().__init__(code)
+        self.code = code
+        if code in {"ollama_timeout", "agent_run_timeout"}:
+            self.status_code = 504
+
+
+class AgentLoopLimitReached(ApplicationError):
+    code = "agent_turn_limit_reached"
+    status_code = 409
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code

@@ -6,7 +6,7 @@ from uuid import UUID
 
 from toolwatch.application.errors import SessionNotFound, ToolCallNotFound
 from toolwatch.application.ports import Page, UnitOfWork, UnitOfWorkFactory
-from toolwatch.domain.agents import Agent
+from toolwatch.domain.agents import Agent, AgentRun, AgentRunStatus, ModelCall
 from toolwatch.domain.common import JSONValue
 from toolwatch.domain.security import (
     AuditEvent,
@@ -77,6 +77,16 @@ class ToolCallView:
     result: JSONValue | None
     flags: tuple[RiskFlag, ...]
     matched_rule_names: tuple[str, ...]
+    audit_events: tuple[AuditEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunDashboardView:
+    """Safe agent-run detail for server-rendered pages."""
+
+    run: AgentRun
+    model_calls: tuple[ModelCall, ...]
+    tool_calls: tuple[ToolCallTimelineEntry, ...]
     audit_events: tuple[AuditEvent, ...]
 
 
@@ -270,6 +280,73 @@ class DashboardQueryService:
 
         async with self._uow_factory() as uow:
             return await uow.rules.list(enabled=enabled, limit=limit, offset=offset)
+
+    async def list_agent_runs(
+        self,
+        *,
+        status: AgentRunStatus | None,
+        limit: int,
+        offset: int,
+    ) -> Page[AgentRun]:
+        """List newest safe agent runs."""
+
+        async with self._uow_factory() as uow:
+            return await uow.agent_runs.list(
+                session_id=None,
+                provider=None,
+                model_name=None,
+                status=status,
+                started_from=None,
+                started_to=None,
+                limit=limit,
+                offset=offset,
+            )
+
+    async def agent_run_view(self, run_id: UUID) -> AgentRunDashboardView:
+        """Return one run with safe model/tool/audit metadata."""
+
+        async with self._uow_factory() as uow:
+            run = await uow.agent_runs.get_by_id(run_id)
+            if run is None:
+                from toolwatch.application.errors import AgentRunNotFound
+
+                raise AgentRunNotFound
+            model_calls = tuple(await uow.model_calls.list_for_run(run_id))
+            calls = await uow.tool_calls.list_for_agent_run(run_id)
+            entries: list[ToolCallTimelineEntry] = []
+            for call in calls:
+                tool = await uow.tools.get_by_id(call.tool_definition_id)
+                if tool is None:
+                    raise ToolCallNotFound
+                flags = await uow.risk_flags.list_for_tool_call(call.id)
+                entries.append(
+                    ToolCallTimelineEntry(
+                        call=call,
+                        tool=tool,
+                        flag_codes=tuple(flag.code.value for flag in flags),
+                        matched_rule_names=await _rule_names(uow, call.matched_rule_ids),
+                    )
+                )
+            audit_page = await uow.audit_events.list(
+                session_id=run.session_id,
+                tool_call_id=None,
+                event_type=None,
+                trace_id=None,
+                correlation_id=None,
+                limit=500,
+                offset=0,
+            )
+            run_events = tuple(
+                event
+                for event in audit_page.items
+                if event.payload_redacted.get("agent_run_id") == str(run.id)
+            )
+        return AgentRunDashboardView(
+            run=run,
+            model_calls=model_calls,
+            tool_calls=tuple(entries),
+            audit_events=run_events,
+        )
 
     async def recent_sessions(self, limit: int = 5) -> tuple[SessionSummary, ...]:
         """Return newest sessions with aggregated statistics."""

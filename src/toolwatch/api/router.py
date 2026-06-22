@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from toolwatch.api.agent_runs import router as agent_runs_router
 from toolwatch.api.audit import router as audit_router
 from toolwatch.api.health import router as health_router
 from toolwatch.api.metrics import router as metrics_router
@@ -18,3 +19,4 @@ api_router.include_router(sessions_router)
 api_router.include_router(tool_calls_router)
 api_router.include_router(rules_router)
 api_router.include_router(audit_router)
+api_router.include_router(agent_runs_router)

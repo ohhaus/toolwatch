@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Agent runs{% endblock %}
+{% block content %}
+  <h1 class="page-title">Agent runs</h1>
+  <form class="filters" method="get" action="{{ url('agent_runs_list') }}">
+    <label>
+      Status
+      <select name="status">
+        <option value="">any</option>
+        {% for value in ('created', 'running', 'completed', 'failed', 'cancelled', 'limit_reached') %}
+          <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Page size
+      <input type="number" name="limit" min="1" max="{{ max_page_size }}" value="{{ pagination.limit }}" />
+    </label>
+    <button type="submit" class="button">Apply</button>
+  </form>
+  {% if runs %}
+    <table class="data-table">
+      <thead>
+        <tr><th>Run</th><th>Provider/model</th><th>Status</th><th>Turns</th><th>Tools</th><th>Started</th></tr>
+      </thead>
+      <tbody>
+        {% for run in runs %}
+          <tr>
+            <td><a href="{{ url('agent_run_detail', run_id=run.id) }}">{{ run.id }}</a></td>
+            <td>{{ run.provider }} / {{ run.model_name }}</td>
+            <td><span class="badge {{ run.status | status_tone }}">{{ run.status }}</span></td>
+            <td>{{ run.turn_count }}</td>
+            <td>{{ run.tool_call_count }}</td>
+            <td><time datetime="{{ run.started_at | isoformat_utc }}">{{ run.started_at | humanize_utc }}</time></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% include "components/pagination.html" %}
+  {% else %}
+    {% include "components/empty_state.html" %}
+  {% endif %}
+{% endblock %}

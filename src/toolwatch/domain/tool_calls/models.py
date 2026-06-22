@@ -76,6 +76,7 @@ class ToolCall:
     arguments_hash: str
     request_hash: str
     idempotency_key: UUID
+    agent_run_id: UUID | None = None
     parent_call_id: UUID | None = None
     status: ToolCallStatus = ToolCallStatus.RECEIVED
     decision: ToolCallDecision = ToolCallDecision.ALLOW

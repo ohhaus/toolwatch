@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -14,8 +14,10 @@ import pytest
 from toolwatch.api.dependencies import get_uow_factory
 from toolwatch.application.ports import (
     AgentRepository,
+    AgentRunRepository,
     AuditEventRepository,
     BlockingRuleRepository,
+    ModelCallRepository,
     Page,
     RiskFlagRepository,
     SessionRepository,
@@ -198,6 +200,11 @@ class _ToolCallRepo:
         items.sort(key=lambda c: c.sequence_number)
         return Page(items[offset : offset + limit], len(items), limit, offset)
 
+    async def list_for_agent_run(self, agent_run_id: UUID) -> list[ToolCall]:
+        return [
+            call for call in self._state.tool_calls.values() if call.agent_run_id == agent_run_id
+        ]
+
     async def next_sequence_number(self, session_id: UUID) -> int:  # pragma: no cover
         return 1
 
@@ -306,6 +313,8 @@ class _Uow:
         self.risk_flags: RiskFlagRepository = _FlagRepo(state)
         self.rules: BlockingRuleRepository = _RuleRepo(state)
         self.audit_events: AuditEventRepository = _AuditRepo(state)
+        self.agent_runs = cast(AgentRunRepository, object())
+        self.model_calls = cast(ModelCallRepository, object())
 
     async def __aenter__(self) -> _Uow:
         return self
@@ -595,6 +604,8 @@ async def test_attack_lab_disabled_hides_attack_routes(
     monkeypatch.setenv("ATTACK_LAB_ENABLED", "false")
     get_settings.cache_clear()
     application = create_app()
+    state = _build_state()
+    application.dependency_overrides[get_uow_factory] = lambda: lambda: _Uow(state)
     async with _client(application) as client:
         response = await client.get("/ui/attacks")
         home = await client.get("/ui")

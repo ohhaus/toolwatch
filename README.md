@@ -5,8 +5,10 @@ designed to validate calls, apply deterministic safety controls, redact sensitiv
 and provide auditability before trusted adapters reach downstream services. The current
 milestone implements Security Pipeline v1 for three trusted in-process mock adapters:
 recursive redaction, deterministic risk/rules, sanitized persistence, audit events, and
-PostgreSQL-backed replay. It does not connect to Ollama or any real GitHub, email,
-database, or other external service.
+PostgreSQL-backed replay. Ollama Agent Loop v1 optionally connects a developer-managed
+local model while keeping every model-requested tool call inside the same ToolWatch
+execution pipeline. It does not connect to any real GitHub, email, database, or other
+external service.
 
 Observability v1 adds OpenTelemetry request and execution traces, safe structured-log
 correlation, append-only audit correlation, and Prometheus-compatible metrics. Telemetry
@@ -33,8 +35,14 @@ and [threat model](docs/threat-model.md).
 - [uv](https://docs.astral.sh/uv/)
 - Docker with Docker Compose
 
-Ollama is not required for this milestone. Future local-LLM demos will run Ollama
-directly on the developer machine, outside the application containers.
+Ollama is optional. On macOS it runs directly on the developer machine, outside the
+application containers:
+
+```bash
+brew install ollama
+ollama serve
+ollama pull qwen3:4b
+```
 
 ## Local development
 
@@ -58,6 +66,7 @@ The API is available at <http://localhost:8000>. Health endpoints:
 ```bash
 curl http://localhost:8000/health/live
 curl http://localhost:8000/health/ready
+curl http://localhost:8000/health/ollama
 ```
 
 Register and list tools:
@@ -152,7 +161,57 @@ an overlapping duplicate returns `409 execution_in_progress`.
 
 The indirect prompt-injection detector is a conservative string heuristic. It flags
 suspicious tool output but is not a guarantee and does not itself prove malicious intent.
-Ollama remains disconnected and optional.
+Ollama remains optional and is contacted only when an Ollama agent run is requested.
+
+## Local agent loop
+
+The fake provider is deterministic and is the default:
+
+```bash
+make seed
+make agent-demo PROVIDER=fake PROMPT="Check open issues in demo/backend"
+```
+
+Run the optional local Ollama provider:
+
+```bash
+export AGENT_PROVIDER=ollama
+export OLLAMA_MODEL=qwen3:4b
+export OLLAMA_ALLOWED_MODELS=qwen3:4b
+make agent-demo PROVIDER=ollama PROMPT="Check open issues in demo/backend"
+```
+
+Or call the synchronous API with an existing active session:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/agent-runs \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id":"<session-id>","provider":"ollama","model":"qwen3:4b","prompt":"Check open issues in demo/backend and summarize."}'
+
+curl http://localhost:8000/api/v1/agent-runs/<run-id>
+curl http://localhost:8000/api/v1/agent-runs
+```
+
+Agent runs are visible at <http://localhost:8000/ui/agent-runs>. The loop is synchronous
+and bounded by configured turn, tool-call, payload, model-call, and total-run limits.
+Multiple tool calls execute sequentially in model order.
+
+Tool definitions come only from enabled trusted registry entries. Provider/model
+selection is allowlisted. Tool arguments still pass through schema validation, redaction,
+risk classification, blocking rules, timeout handling, audit, and telemetry.
+
+Full prompts, conversation history, raw provider responses, raw tool arguments/results,
+and model thinking are never persisted. Thinking is not returned by the API or dashboard.
+Only redacted final content and safe run/model metadata are stored.
+
+Live smoke verification requires the API, PostgreSQL, and local Ollama to be running:
+
+```bash
+make verify-ollama-agent
+```
+
+The script never pulls a model automatically. If Ollama reports the configured model is
+missing, run `ollama pull qwen3:4b` manually.
 
 Stop local infrastructure with:
 

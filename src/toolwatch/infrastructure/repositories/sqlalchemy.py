@@ -1,6 +1,7 @@
 """SQLAlchemy implementations of application repository ports."""
 
 from builtins import list as list_type
+from datetime import datetime
 from typing import cast
 from uuid import UUID
 
@@ -11,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from toolwatch.application.ports import Page, RepositoryConflict
-from toolwatch.domain.agents import Agent, AgentIdentity
+from toolwatch.domain.agents import (
+    Agent,
+    AgentIdentity,
+    AgentRun,
+    AgentRunStatus,
+    ModelCall,
+    ModelCallStatus,
+)
 from toolwatch.domain.common import JSONObject
 from toolwatch.domain.security import (
     AuditEvent,
@@ -32,9 +40,11 @@ from toolwatch.domain.tool_calls import (
 from toolwatch.domain.tools import RiskLevel, ToolDefinition
 from toolwatch.infrastructure.database.models import (
     AgentModel,
+    AgentRunModel,
     AgentSessionModel,
     AuditEventModel,
     BlockingRuleModel,
+    ModelCallModel,
     RiskFlagModel,
     ToolCallModel,
     ToolDefinitionModel,
@@ -86,6 +96,112 @@ class SqlAlchemyAgentRepository:
         if existing is None:
             raise RuntimeError("agent upsert did not return a row")
         return existing
+
+
+class SqlAlchemyAgentRunRepository:
+    """Persist and query safe agent-run lifecycle metadata."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_id(self, run_id: UUID) -> AgentRun | None:
+        model = await self._session.get(AgentRunModel, run_id)
+        return _agent_run_from_model(model) if model is not None else None
+
+    async def list(
+        self,
+        *,
+        session_id: UUID | None,
+        provider: str | None,
+        model_name: str | None,
+        status: AgentRunStatus | None,
+        started_from: datetime | None,
+        started_to: datetime | None,
+        limit: int,
+        offset: int,
+    ) -> Page[AgentRun]:
+        conditions: list[ColumnElement[bool]] = []
+        if session_id is not None:
+            conditions.append(AgentRunModel.session_id == session_id)
+        if provider is not None:
+            conditions.append(AgentRunModel.provider == provider)
+        if model_name is not None:
+            conditions.append(AgentRunModel.model_name == model_name)
+        if status is not None:
+            conditions.append(AgentRunModel.status == status.value)
+        if started_from is not None:
+            conditions.append(AgentRunModel.started_at >= started_from)
+        if started_to is not None:
+            conditions.append(AgentRunModel.started_at <= started_to)
+        statement = select(AgentRunModel)
+        count_statement = select(func.count()).select_from(AgentRunModel)
+        if conditions:
+            statement = statement.where(*conditions)
+            count_statement = count_statement.where(*conditions)
+        statement = (
+            statement.order_by(AgentRunModel.started_at.desc(), AgentRunModel.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        models = list((await self._session.scalars(statement)).all())
+        total = int((await self._session.scalar(count_statement)) or 0)
+        return Page([_agent_run_from_model(model) for model in models], total, limit, offset)
+
+    async def create(self, run: AgentRun) -> AgentRun:
+        model = _agent_run_to_model(run)
+        self._session.add(model)
+        await self._session.flush()
+        return _agent_run_from_model(model)
+
+    async def update(self, run: AgentRun) -> AgentRun:
+        model = await self._session.get(AgentRunModel, run.id)
+        if model is None:
+            raise RuntimeError("agent run disappeared during update")
+        model.status = run.status.value
+        model.turn_count = run.turn_count
+        model.tool_call_count = run.tool_call_count
+        model.final_answer_redacted = run.final_answer_redacted
+        model.error_code = run.error_code
+        model.finished_at = run.finished_at
+        model.updated_at = run.updated_at
+        await self._session.flush()
+        return _agent_run_from_model(model)
+
+
+class SqlAlchemyModelCallRepository:
+    """Persist safe provider-call metadata."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def list_for_run(self, agent_run_id: UUID) -> list[ModelCall]:
+        statement = (
+            select(ModelCallModel)
+            .where(ModelCallModel.agent_run_id == agent_run_id)
+            .order_by(ModelCallModel.turn_number, ModelCallModel.id)
+        )
+        return [_model_call_from_model(model) for model in await self._session.scalars(statement)]
+
+    async def create(self, call: ModelCall) -> ModelCall:
+        model = _model_call_to_model(call)
+        self._session.add(model)
+        await self._session.flush()
+        return _model_call_from_model(model)
+
+    async def update(self, call: ModelCall) -> ModelCall:
+        model = await self._session.get(ModelCallModel, call.id)
+        if model is None:
+            raise RuntimeError("model call disappeared during update")
+        model.status = call.status.value
+        model.requested_tool_count = call.requested_tool_count
+        model.prompt_token_count = call.prompt_token_count
+        model.completion_token_count = call.completion_token_count
+        model.total_duration_ms = call.total_duration_ms
+        model.load_duration_ms = call.load_duration_ms
+        model.error_code = call.error_code
+        model.finished_at = call.finished_at
+        await self._session.flush()
+        return _model_call_from_model(model)
 
 
 class SqlAlchemyToolRepository:
@@ -286,6 +402,14 @@ class SqlAlchemyToolCallRepository:
             offset=offset,
         )
 
+    async def list_for_agent_run(self, agent_run_id: UUID) -> list_type[ToolCall]:
+        statement = (
+            select(ToolCallModel)
+            .where(ToolCallModel.agent_run_id == agent_run_id)
+            .order_by(ToolCallModel.sequence_number, ToolCallModel.id)
+        )
+        return [_tool_call_from_model(model) for model in await self._session.scalars(statement)]
+
     async def next_sequence_number(self, session_id: UUID) -> int:
         statement = select(func.max(ToolCallModel.sequence_number)).where(
             ToolCallModel.session_id == session_id
@@ -370,6 +494,88 @@ def _agent_from_model(model: AgentModel) -> Agent:
     )
 
 
+def _agent_run_to_model(run: AgentRun) -> AgentRunModel:
+    return AgentRunModel(
+        id=run.id,
+        session_id=run.session_id,
+        provider=run.provider,
+        model_name=run.model_name,
+        status=run.status.value,
+        turn_count=run.turn_count,
+        tool_call_count=run.tool_call_count,
+        final_answer_redacted=run.final_answer_redacted,
+        error_code=run.error_code,
+        trace_id=run.trace_id,
+        correlation_id=run.correlation_id,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
+    )
+
+
+def _agent_run_from_model(model: AgentRunModel) -> AgentRun:
+    return AgentRun(
+        id=model.id,
+        session_id=model.session_id,
+        provider=model.provider,
+        model_name=model.model_name,
+        status=AgentRunStatus(model.status),
+        turn_count=model.turn_count,
+        tool_call_count=model.tool_call_count,
+        final_answer_redacted=model.final_answer_redacted,
+        error_code=model.error_code,
+        trace_id=model.trace_id,
+        correlation_id=model.correlation_id,
+        started_at=model.started_at,
+        finished_at=model.finished_at,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def _model_call_to_model(call: ModelCall) -> ModelCallModel:
+    return ModelCallModel(
+        id=call.id,
+        agent_run_id=call.agent_run_id,
+        turn_number=call.turn_number,
+        provider=call.provider,
+        model_name=call.model_name,
+        status=call.status.value,
+        requested_tool_count=call.requested_tool_count,
+        prompt_token_count=call.prompt_token_count,
+        completion_token_count=call.completion_token_count,
+        total_duration_ms=call.total_duration_ms,
+        load_duration_ms=call.load_duration_ms,
+        error_code=call.error_code,
+        trace_id=call.trace_id,
+        correlation_id=call.correlation_id,
+        started_at=call.started_at,
+        finished_at=call.finished_at,
+    )
+
+
+def _model_call_from_model(model: ModelCallModel) -> ModelCall:
+    return ModelCall(
+        id=model.id,
+        agent_run_id=model.agent_run_id,
+        turn_number=model.turn_number,
+        provider=model.provider,
+        model_name=model.model_name,
+        status=ModelCallStatus(model.status),
+        requested_tool_count=model.requested_tool_count,
+        prompt_token_count=model.prompt_token_count,
+        completion_token_count=model.completion_token_count,
+        total_duration_ms=model.total_duration_ms,
+        load_duration_ms=model.load_duration_ms,
+        error_code=model.error_code,
+        trace_id=model.trace_id,
+        correlation_id=model.correlation_id,
+        started_at=model.started_at,
+        finished_at=model.finished_at,
+    )
+
+
 def _tool_to_model(tool: ToolDefinition) -> ToolDefinitionModel:
     return ToolDefinitionModel(
         id=tool.id,
@@ -420,6 +626,7 @@ def _session_from_model(model: AgentSessionModel) -> AgentSession:
 def _tool_call_to_model(call: ToolCall) -> ToolCallModel:
     return ToolCallModel(
         id=call.id,
+        agent_run_id=call.agent_run_id,
         session_id=call.session_id,
         tool_definition_id=call.tool_definition_id,
         parent_call_id=call.parent_call_id,
@@ -445,6 +652,7 @@ def _tool_call_to_model(call: ToolCall) -> ToolCallModel:
 def _tool_call_from_model(model: ToolCallModel) -> ToolCall:
     return ToolCall(
         id=model.id,
+        agent_run_id=model.agent_run_id,
         session_id=model.session_id,
         tool_definition_id=model.tool_definition_id,
         parent_call_id=model.parent_call_id,

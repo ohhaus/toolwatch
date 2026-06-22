@@ -217,6 +217,14 @@ def downgrade() -> None:
 
     op.drop_column("tool_result_metadata", "truncated")
     op.drop_column("tool_result_metadata", "redacted_payload")
+    op.execute(
+        "UPDATE tool_calls SET status = 'failed', decision = 'allow' WHERE status = 'blocked'"
+    )
+    op.execute(
+        "UPDATE tool_calls SET status = 'validating', decision = 'allow' "
+        "WHERE status = 'evaluating'"
+    )
+    op.execute("UPDATE tool_calls SET decision = 'allow' WHERE decision = 'flag'")
     op.drop_constraint("ck_tool_calls_status_decision", "tool_calls", type_="check")
     op.drop_constraint("ck_tool_calls_status_finished_at", "tool_calls", type_="check")
     op.drop_constraint("ck_tool_calls_risk_level", "tool_calls", type_="check")

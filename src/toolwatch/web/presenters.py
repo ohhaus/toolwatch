@@ -4,6 +4,7 @@ import json
 from collections.abc import Iterable
 
 from toolwatch.application.queries import (
+    AgentRunDashboardView,
     DashboardCounts,
     SessionSummary,
     SessionTimeline,
@@ -21,11 +22,14 @@ from toolwatch.domain.tool_calls import ToolCall
 from toolwatch.domain.tools import ToolDefinition
 from toolwatch.telemetry.context import is_trace_id
 from toolwatch.web.view_models import (
+    AgentRunDetail,
+    AgentRunListItem,
     AgentView,
     AttackRunResultView,
     AttackScenarioView,
     AuditEventView,
     DashboardSummary,
+    ModelCallView,
     PaginationView,
     RiskFlagView,
     RuleView,
@@ -232,6 +236,70 @@ def rule_view(rule: BlockingRule) -> RuleView:
         condition_summary=_bound_string(" · ".join(summary_parts), limit=500),
         created_at=rule.created_at,
         updated_at=rule.updated_at,
+    )
+
+
+def agent_run_list_item(run: object) -> AgentRunListItem:
+    from toolwatch.domain.agents import AgentRun
+
+    if not isinstance(run, AgentRun):
+        raise TypeError("run must be AgentRun")
+    return AgentRunListItem(
+        id=run.id,
+        session_id=run.session_id,
+        provider=_bound_string(run.provider, limit=50),
+        model_name=_bound_string(run.model_name, limit=255),
+        status=run.status.value,
+        turn_count=run.turn_count,
+        tool_call_count=run.tool_call_count,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        error_code=_bound_string(run.error_code, limit=100) if run.error_code else None,
+    )
+
+
+def agent_run_detail(
+    view: AgentRunDashboardView,
+    *,
+    jaeger_ui_base_url: str | None,
+) -> AgentRunDetail:
+    run = view.run
+    return AgentRunDetail(
+        id=run.id,
+        session_id=run.session_id,
+        provider=_bound_string(run.provider, limit=50),
+        model_name=_bound_string(run.model_name, limit=255),
+        status=run.status.value,
+        turn_count=run.turn_count,
+        tool_call_count=run.tool_call_count,
+        final_answer=(
+            _bound_string(run.final_answer_redacted, limit=12_288)
+            if run.final_answer_redacted
+            else None
+        ),
+        error_code=_bound_string(run.error_code, limit=100) if run.error_code else None,
+        trace_id=run.trace_id,
+        correlation_id=run.correlation_id,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        model_calls=tuple(
+            ModelCallView(
+                turn_number=call.turn_number,
+                status=call.status.value,
+                requested_tool_count=call.requested_tool_count,
+                prompt_token_count=call.prompt_token_count,
+                completion_token_count=call.completion_token_count,
+                total_duration_ms=call.total_duration_ms,
+                load_duration_ms=call.load_duration_ms,
+                error_code=call.error_code,
+                started_at=call.started_at,
+                finished_at=call.finished_at,
+            )
+            for call in view.model_calls
+        ),
+        tool_calls=tuple(tool_call_timeline_item(entry) for entry in view.tool_calls),
+        audit_events=tuple(audit_event_view(event) for event in view.audit_events),
+        jaeger_link=_build_jaeger_link(jaeger_ui_base_url, run.trace_id),
     )
 
 

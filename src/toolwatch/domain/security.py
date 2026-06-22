@@ -156,6 +156,15 @@ class AuditEventType(StrEnum):
     TOOL_CALL_TIMED_OUT = "tool_call.timed_out"
     REDACTION_APPLIED = "redaction.applied"
     RULE_MATCHED = "rule.matched"
+    AGENT_RUN_STARTED = "agent_run.started"
+    AGENT_RUN_COMPLETED = "agent_run.completed"
+    AGENT_RUN_FAILED = "agent_run.failed"
+    AGENT_RUN_LIMIT_REACHED = "agent_run.limit_reached"
+    MODEL_CALL_STARTED = "model_call.started"
+    MODEL_CALL_COMPLETED = "model_call.completed"
+    MODEL_CALL_FAILED = "model_call.failed"
+    AGENT_TOOL_CALL_REQUESTED = "agent_tool_call.requested"
+    AGENT_TOOL_CALL_COMPLETED = "agent_tool_call.completed"
 
 
 @dataclass(frozen=True, slots=True)

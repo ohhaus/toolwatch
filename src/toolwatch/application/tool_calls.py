@@ -78,6 +78,7 @@ class ExecuteToolCall:
     tool_version: str
     arguments: Mapping[str, object]
     idempotency_key: UUID
+    agent_run_id: UUID | None = None
     parent_call_id: UUID | None = None
 
 
@@ -654,6 +655,7 @@ class ToolCallService:
             call = ToolCall(
                 session_id=session.id,
                 tool_definition_id=tool.id,
+                agent_run_id=request.agent_run_id,
                 parent_call_id=request.parent_call_id,
                 sequence_number=await uow.tool_calls.next_sequence_number(session.id),
                 arguments_hash=arguments_hash,

@@ -8,12 +8,22 @@ AttributeValue = str | bool | int | float
 GEN_AI_OPERATION_NAME: Final = "gen_ai.operation.name"
 GEN_AI_TOOL_NAME: Final = "gen_ai.tool.name"
 GEN_AI_TOOL_TYPE: Final = "gen_ai.tool.type"
+GEN_AI_PROVIDER_NAME: Final = "gen_ai.provider.name"
+GEN_AI_REQUEST_MODEL: Final = "gen_ai.request.model"
+GEN_AI_RESPONSE_MODEL: Final = "gen_ai.response.model"
+GEN_AI_USAGE_INPUT_TOKENS: Final = "gen_ai.usage.input_tokens"
+GEN_AI_USAGE_OUTPUT_TOKENS: Final = "gen_ai.usage.output_tokens"
 
 ALLOWED_SPAN_ATTRIBUTES: Final = frozenset(
     {
         GEN_AI_OPERATION_NAME,
         GEN_AI_TOOL_NAME,
         GEN_AI_TOOL_TYPE,
+        GEN_AI_PROVIDER_NAME,
+        GEN_AI_REQUEST_MODEL,
+        GEN_AI_RESPONSE_MODEL,
+        GEN_AI_USAGE_INPUT_TOKENS,
+        GEN_AI_USAGE_OUTPUT_TOKENS,
         "http.request.method",
         "http.route",
         "http.response.status_code",
@@ -35,6 +45,9 @@ ALLOWED_SPAN_ATTRIBUTES: Final = frozenset(
         "rule.match_count",
         "decision",
         "db.operation",
+        "toolwatch.agent.turn",
+        "toolwatch.agent.tool_call_count",
+        "toolwatch.agent.status",
     }
 )
 
@@ -54,6 +67,8 @@ ALLOWED_METRIC_LABELS: Final = frozenset(
         "rule_action",
         "replayed",
         "operation",
+        "provider",
+        "model",
     }
 )
 

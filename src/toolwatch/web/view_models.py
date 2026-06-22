@@ -158,6 +158,55 @@ class RuleView:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentRunListItem:
+    id: UUID
+    session_id: UUID
+    provider: str
+    model_name: str
+    status: str
+    turn_count: int
+    tool_call_count: int
+    started_at: datetime
+    finished_at: datetime | None
+    error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCallView:
+    turn_number: int
+    status: str
+    requested_tool_count: int
+    prompt_token_count: int | None
+    completion_token_count: int | None
+    total_duration_ms: int | None
+    load_duration_ms: int | None
+    error_code: str | None
+    started_at: datetime
+    finished_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunDetail:
+    id: UUID
+    session_id: UUID
+    provider: str
+    model_name: str
+    status: str
+    turn_count: int
+    tool_call_count: int
+    final_answer: str | None
+    error_code: str | None
+    trace_id: str | None
+    correlation_id: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    model_calls: tuple[ModelCallView, ...]
+    tool_calls: tuple[ToolCallTimelineItem, ...]
+    audit_events: tuple[AuditEventView, ...]
+    jaeger_link: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class PaginationView:
     """Bounded pagination metadata for list pages."""
 

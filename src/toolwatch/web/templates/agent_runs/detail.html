@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Agent run {{ run.id }}{% endblock %}
+{% block content %}
+  <a class="back-link" href="{{ url('agent_runs_list') }}">← Agent runs</a>
+  <h1 class="page-title">Agent run {{ run.id }}</h1>
+  <dl class="meta">
+    <dt>Provider/model</dt><dd>{{ run.provider }} / {{ run.model_name }}</dd>
+    <dt>Status</dt><dd><span class="badge {{ run.status | status_tone }}">{{ run.status }}</span></dd>
+    <dt>Session</dt><dd><a href="{{ url('session_detail', session_id=run.session_id) }}">{{ run.session_id }}</a></dd>
+    <dt>Turns/tools</dt><dd>{{ run.turn_count }} / {{ run.tool_call_count }}</dd>
+    <dt>Started</dt><dd>{{ run.started_at | humanize_utc }}</dd>
+    {% if run.finished_at %}<dt>Finished</dt><dd>{{ run.finished_at | humanize_utc }}</dd>{% endif %}
+    {% if run.correlation_id %}<dt>Correlation</dt><dd class="mono">{{ run.correlation_id }}</dd>{% endif %}
+    {% if run.trace_id %}<dt>Trace</dt><dd class="mono">{{ run.trace_id }}</dd>{% endif %}
+  </dl>
+  {% if run.jaeger_link %}
+    <p><a href="{{ run.jaeger_link }}" target="_blank" rel="noopener noreferrer">Open trace in Jaeger</a></p>
+  {% endif %}
+  <section class="panel">
+    <h2>Final answer (sanitized)</h2>
+    {% if run.final_answer %}<pre class="json">{{ run.final_answer }}</pre>{% else %}<p>—</p>{% endif %}
+  </section>
+  <section class="panel">
+    <h2>Model calls</h2>
+    {% if run.model_calls %}
+      <table class="data-table">
+        <thead><tr><th>Turn</th><th>Status</th><th>Tools</th><th>Input tokens</th><th>Output tokens</th><th>Duration</th></tr></thead>
+        <tbody>
+          {% for call in run.model_calls %}
+            <tr>
+              <td>{{ call.turn_number }}</td><td>{{ call.status }}</td>
+              <td>{{ call.requested_tool_count }}</td>
+              <td>{{ call.prompt_token_count or '—' }}</td><td>{{ call.completion_token_count or '—' }}</td>
+              <td>{{ call.total_duration_ms | duration_label }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}{% include "components/empty_state.html" %}{% endif %}
+  </section>
+  <section class="panel">
+    <h2>Tool calls</h2>
+    {% if run.tool_calls %}
+      <ol class="timeline">
+        {% for call in run.tool_calls %}{% include "tool_calls/timeline_item.html" %}{% endfor %}
+      </ol>
+    {% else %}{% include "components/empty_state.html" %}{% endif %}
+  </section>
+  <section class="panel">
+    <h2>Audit lifecycle</h2>
+    {% if run.audit_events %}
+      <ol class="timeline audit">
+        {% for event in run.audit_events %}
+          <li class="timeline-item"><strong>{{ event.event_type }}</strong> <time>{{ event.created_at | humanize_utc }}</time></li>
+        {% endfor %}
+      </ol>
+    {% else %}{% include "components/empty_state.html" %}{% endif %}
+  </section>
+{% endblock %}

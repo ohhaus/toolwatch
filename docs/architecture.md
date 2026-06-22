@@ -222,3 +222,33 @@ introduced for this milestone; the existing audit, tool-call, and session indexe
 support every dashboard read.
 
 See [ADR 0006](adr/0006-dashboard-and-attack-lab-v1.md).
+
+## Ollama Agent Loop v1
+
+The local agent loop adds a provider boundary without changing the execution authority:
+
+```text
+API / CLI
+└── AgentRunService
+    ├── FakeAgentProvider or local OllamaAgentProvider
+    ├── provider tool-schema translation
+    ├── bounded in-memory redacted conversation
+    └── ToolCallService
+        └── existing registry → validation → redaction → risk/rules → adapter pipeline
+```
+
+Only enabled registry tools are exposed. Provider names are normalized deterministically
+and mapped back to one unambiguous registered name/version; collisions and duplicate
+enabled versions fail before a model request. Calls execute sequentially in model order.
+
+The application-controlled system prompt is versioned as
+`toolwatch-agent-system-v1`. User and assistant content is redacted before retention;
+tool messages contain sanitized ToolWatch output or fixed safe errors. Provider thinking
+is discarded. Conversation history remains in memory and is bounded by per-message and
+cumulative byte limits.
+
+`agent_runs` stores lifecycle counters, safe error codes, trace/correlation IDs, and an
+optional redacted final answer. `model_calls` stores turn, status, token counts, and
+durations. Neither table has prompt, message, response, argument, result, or thinking
+columns. `tool_calls.agent_run_id` links every mediated call. See
+[ADR 0007](adr/0007-ollama-agent-loop-v1.md).

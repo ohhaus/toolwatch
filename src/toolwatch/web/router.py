@@ -13,12 +13,14 @@ from fastapi.staticfiles import StaticFiles
 
 from toolwatch.api.dependencies import get_uow_factory
 from toolwatch.application.errors import (
+    AgentRunNotFound,
     SessionNotFound,
     ToolCallNotFound,
 )
 from toolwatch.application.ports import UnitOfWorkFactory
 from toolwatch.application.queries import DashboardQueryService
 from toolwatch.config import Settings, get_settings
+from toolwatch.domain.agents import AgentRunStatus
 from toolwatch.domain.security import AuditEventType
 from toolwatch.telemetry.context import current_correlation
 from toolwatch.web import presenters
@@ -44,6 +46,8 @@ _ROUTE_TEMPLATES: dict[str, str] = {
     "attacks_index": "/attacks",
     "attack_detail": "/attacks/{scenario_id}",
     "attack_run": "/attacks/{scenario_id}/run",
+    "agent_runs_list": "/agent-runs",
+    "agent_run_detail": "/agent-runs/{run_id}",
 }
 
 
@@ -239,6 +243,62 @@ def create_dashboard_router(settings: Settings) -> APIRouter:
         )
         return helpers.render("rules/list.html", rules=rules, pagination=pagination)
 
+    @router.get(
+        f"{prefix}/agent-runs",
+        response_class=HTMLResponse,
+        name="agent_runs_list",
+    )
+    async def agent_runs_list_page(
+        uow_factory: UowDependency,
+        run_status: StatusQuery = None,
+        limit: OptionalIntQuery = None,
+        offset: OffsetQuery = 0,
+    ) -> HTMLResponse:
+        normalized_limit = helpers.page_limit(limit)
+        status_value = _parse_agent_run_status(run_status)
+        page = await DashboardQueryService(uow_factory).list_agent_runs(
+            status=status_value,
+            limit=normalized_limit,
+            offset=offset,
+        )
+        runs = tuple(presenters.agent_run_list_item(run) for run in page.items)
+        return helpers.render(
+            "agent_runs/list.html",
+            runs=runs,
+            filters={"status": status_value.value if status_value else None},
+            pagination=presenters.pagination_view(
+                limit=normalized_limit,
+                offset=offset,
+                total=page.total,
+            ),
+        )
+
+    @router.get(
+        f"{prefix}/agent-runs/{{run_id}}",
+        response_class=HTMLResponse,
+        name="agent_run_detail",
+    )
+    async def agent_run_detail_page(
+        run_id: UUID,
+        uow_factory: UowDependency,
+    ) -> HTMLResponse:
+        try:
+            view = await DashboardQueryService(uow_factory).agent_run_view(run_id)
+        except AgentRunNotFound:
+            return helpers.render_error(
+                code="agent_run_not_found",
+                heading="Agent run not found",
+                message="The agent run was not found.",
+                status_code=404,
+            )
+        return helpers.render(
+            "agent_runs/detail.html",
+            run=presenters.agent_run_detail(
+                view,
+                jaeger_ui_base_url=settings.jaeger_ui_public_url,
+            ),
+        )
+
     @router.get(f"{prefix}/audit-events", response_class=HTMLResponse, name="audit_list")
     async def audit_list_page(
         uow_factory: UowDependency,
@@ -360,6 +420,8 @@ def create_dashboard_router(settings: Settings) -> APIRouter:
         session_detail_page,
         tool_call_detail_page,
         rules_list_page,
+        agent_runs_list_page,
+        agent_run_detail_page,
         audit_list_page,
         *attack_handlers,
     )
@@ -515,6 +577,15 @@ def _parse_session_status(value: str | None) -> str | None:
     if value in {"active", "completed", "failed"}:
         return value
     return None
+
+
+def _parse_agent_run_status(value: str | None) -> AgentRunStatus | None:
+    if value is None or value == "":
+        return None
+    try:
+        return AgentRunStatus(value)
+    except ValueError:
+        return None
 
 
 def _parse_audit_event_type(value: str | None) -> AuditEventType | None:

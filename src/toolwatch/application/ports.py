@@ -3,11 +3,12 @@
 from builtins import list as list_type
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
 
-from toolwatch.domain.agents import Agent, AgentIdentity
+from toolwatch.domain.agents import Agent, AgentIdentity, AgentRun, AgentRunStatus, ModelCall
 from toolwatch.domain.security import (
     AuditEvent,
     AuditEventType,
@@ -109,6 +110,8 @@ class ToolCallRepository(Protocol):
         offset: int,
     ) -> Page[ToolCall]: ...
 
+    async def list_for_agent_run(self, agent_run_id: UUID) -> list_type[ToolCall]: ...
+
     async def next_sequence_number(self, session_id: UUID) -> int: ...
 
     async def create(self, call: ToolCall) -> ToolCall: ...
@@ -175,6 +178,39 @@ class AuditEventRepository(Protocol):
     ) -> list_type[AuditEvent]: ...
 
 
+class AgentRunRepository(Protocol):
+    """Persistence operations for bounded agent runs."""
+
+    async def get_by_id(self, run_id: UUID) -> AgentRun | None: ...
+
+    async def list(
+        self,
+        *,
+        session_id: UUID | None,
+        provider: str | None,
+        model_name: str | None,
+        status: AgentRunStatus | None,
+        started_from: datetime | None,
+        started_to: datetime | None,
+        limit: int,
+        offset: int,
+    ) -> Page[AgentRun]: ...
+
+    async def create(self, run: AgentRun) -> AgentRun: ...
+
+    async def update(self, run: AgentRun) -> AgentRun: ...
+
+
+class ModelCallRepository(Protocol):
+    """Persistence operations for safe model-call metadata."""
+
+    async def list_for_run(self, agent_run_id: UUID) -> list[ModelCall]: ...
+
+    async def create(self, call: ModelCall) -> ModelCall: ...
+
+    async def update(self, call: ModelCall) -> ModelCall: ...
+
+
 class UnitOfWork(Protocol):
     """Transaction boundary owned by an application use case."""
 
@@ -186,6 +222,8 @@ class UnitOfWork(Protocol):
     risk_flags: RiskFlagRepository
     rules: BlockingRuleRepository
     audit_events: AuditEventRepository
+    agent_runs: AgentRunRepository
+    model_calls: ModelCallRepository
 
     async def __aenter__(self) -> Self: ...
 

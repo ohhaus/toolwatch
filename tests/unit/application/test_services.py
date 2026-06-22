@@ -12,8 +12,10 @@ from toolwatch.application.errors import (
 )
 from toolwatch.application.ports import (
     AgentRepository,
+    AgentRunRepository,
     AuditEventRepository,
     BlockingRuleRepository,
+    ModelCallRepository,
     Page,
     RepositoryConflict,
     RiskFlagRepository,
@@ -137,6 +139,8 @@ class MemoryUnitOfWork:
     risk_flags: RiskFlagRepository
     rules: BlockingRuleRepository
     audit_events: AuditEventRepository
+    agent_runs: AgentRunRepository
+    model_calls: ModelCallRepository
 
     def __init__(self) -> None:
         self.agents = MemoryAgents()
@@ -147,6 +151,8 @@ class MemoryUnitOfWork:
         self.risk_flags = cast(RiskFlagRepository, object())
         self.rules = cast(BlockingRuleRepository, object())
         self.audit_events = cast(AuditEventRepository, MemoryAuditEvents())
+        self.agent_runs = cast(AgentRunRepository, object())
+        self.model_calls = cast(ModelCallRepository, object())
         self.commits = 0
 
     async def __aenter__(self) -> Self:

@@ -35,6 +35,8 @@ def test_migration_downgrade_and_upgrade(postgres_url: str) -> None:
     assert "risk_flags" not in downgraded_tables
     assert "blocking_rules" not in downgraded_tables
     assert "audit_events" not in downgraded_tables
+    assert "agent_runs" not in downgraded_tables
+    assert "model_calls" not in downgraded_tables
 
     command.upgrade(config, "head")
     upgraded_tables = run(_table_names(postgres_url))
@@ -48,6 +50,8 @@ def test_migration_downgrade_and_upgrade(postgres_url: str) -> None:
         "risk_flags",
         "blocking_rules",
         "audit_events",
+        "agent_runs",
+        "model_calls",
     } <= upgraded_tables
 
 

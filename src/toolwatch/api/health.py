@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from toolwatch.api.dependencies import get_telemetry
+from toolwatch.config import Settings, get_settings
+from toolwatch.infrastructure.agents import OllamaAgentProvider
 from toolwatch.infrastructure.database.engine import get_engine
 from toolwatch.infrastructure.database.health import is_database_available
 from toolwatch.telemetry import TelemetryRuntime
@@ -42,6 +44,13 @@ class TelemetryHealthResponse(BaseModel):
     status: Literal["ok", "degraded", "disabled"]
     tracing: Literal["configured", "disabled"]
     exporter: Literal["configured", "degraded", "disabled"]
+
+
+class OllamaHealthResponse(BaseModel):
+    """Coarse optional local-provider state that never gates readiness."""
+
+    status: Literal["available", "degraded", "disabled"]
+    provider: Literal["ollama", "fake"]
 
 
 @router.get("/live", response_model=LivenessResponse)
@@ -91,4 +100,19 @@ def telemetry_health(
         status=status_value,
         tracing=tracing,
         exporter=exporter,
+    )
+
+
+@router.get("/ollama", response_model=OllamaHealthResponse)
+async def ollama_health(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> OllamaHealthResponse:
+    """Check the local Ollama control endpoint without model generation."""
+
+    if settings.agent_provider != "ollama":
+        return OllamaHealthResponse(status="disabled", provider="fake")
+    available = await OllamaAgentProvider(settings.ollama_base_url).health()
+    return OllamaHealthResponse(
+        status="available" if available else "degraded",
+        provider="ollama",
     )

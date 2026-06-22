@@ -128,3 +128,22 @@ timeout, confirms the `execute_tool github.list_issues` span is present, confirm
 no `execute_tool database.query` span is created for the blocked call, and
 searches all returned trace JSON for a unique synthetic secret. It is excluded
 from `make check` and CI. Invoke it with `make verify-jaeger`.
+
+## Agent-loop and local Ollama tests
+
+`FakeAgentProvider` is the CI/default provider. Scripted response sequences cover final
+answers, one or several tool calls, multiple turns, blocked calls, provider failures,
+ordering, persistence, audit, telemetry, and secret non-disclosure without network or
+sleeping.
+
+Local Ollama tests are marked `local_llm` and remain excluded from `make test` and CI:
+
+```bash
+ollama pull qwen3:4b
+uv run pytest -m local_llm tests/integration/test_ollama_agent.py
+make verify-ollama-agent
+```
+
+Local-model assertions check structure and safety (`completed`, at least one mediated
+tool call, blocked calls remain blocked, final answer exists, thinking/unique secrets are
+absent). They do not assert exact free-form wording.

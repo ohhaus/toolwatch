@@ -66,9 +66,19 @@ class ToolCallModel(Base):
         Index("ix_tool_calls_status", "status"),
         Index("ix_tool_calls_created_at", "created_at"),
         Index("ix_tool_calls_tool_definition_id", "tool_definition_id"),
+        Index("ix_tool_calls_agent_run_id", "agent_run_id"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(
+            "agent_runs.id",
+            name="fk_tool_calls_agent_run_id_agent_runs",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
     session_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey(

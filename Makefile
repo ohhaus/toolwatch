@@ -1,7 +1,7 @@
 .PHONY: install infra-up infra-down run migrate seed test test-unit test-integration
 .PHONY: test-domain test-api test-web
 .PHONY: lint format typecheck check docker-build docker-up docker-down
-.PHONY: attack-list attack-run attack-run-all demo verify-jaeger
+.PHONY: attack-list attack-run attack-run-all demo verify-jaeger agent-demo verify-ollama-agent
 
 install:
 	uv sync --frozen
@@ -72,6 +72,12 @@ attack-run-all:
 
 verify-jaeger:
 	uv run python scripts/verify_jaeger.py
+
+agent-demo:
+	uv run python -m toolwatch.agent run --provider $(or $(PROVIDER),fake) $(or $(PROMPT),"Check open issues in demo/backend")
+
+verify-ollama-agent:
+	uv run python scripts/verify_ollama_agent.py
 
 demo:
 	docker compose --profile observability up -d postgres jaeger

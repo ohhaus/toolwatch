@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -67,6 +68,24 @@ class Settings(BaseSettings):
     dashboard_refresh_seconds: int = Field(default=10, ge=5, le=3_600)
     attack_lab_enabled: bool = True
     jaeger_ui_public_url: str | None = None
+    agent_provider: Literal["fake", "ollama"] = "fake"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = Field(default="qwen3:4b", min_length=1, max_length=255)
+    ollama_allowed_models: str = "qwen3:4b"
+    fake_agent_model: str = Field(default="fake-v1", min_length=1, max_length=255)
+    fake_agent_allowed_models: str = "fake-v1"
+    ollama_timeout_seconds: float = Field(default=120.0, gt=0, le=300)
+    ollama_keep_alive: str = Field(default="10m", min_length=1, max_length=32)
+    ollama_think: bool = False
+    agent_max_turns: int = Field(default=8, ge=1, le=32)
+    agent_max_tool_calls: int = Field(default=16, ge=0, le=128)
+    agent_max_tools_per_turn: int = Field(default=4, ge=1, le=32)
+    agent_max_exposed_tools: int = Field(default=64, ge=0, le=256)
+    agent_max_message_bytes: int = Field(default=65_536, ge=1)
+    agent_max_conversation_bytes: int = Field(default=262_144, ge=1)
+    agent_max_provider_response_bytes: int = Field(default=1_048_576, ge=1)
+    agent_run_timeout_seconds: float = Field(default=180.0, gt=0, le=600)
+    agent_store_final_answer: bool = True
 
     @model_validator(mode="after")
     def validate_redaction_key(self) -> "Settings":
@@ -88,7 +107,35 @@ class Settings(BaseSettings):
             )
         ):
             raise ValueError("production redaction fingerprints require a strong independent key")
+        parsed = urlsplit(self.ollama_base_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("OLLAMA_BASE_URL must be a credential-free local HTTP(S) URL")
+        if self.ollama_model not in self.allowed_ollama_models:
+            raise ValueError("OLLAMA_MODEL must be present in OLLAMA_ALLOWED_MODELS")
+        if self.fake_agent_model not in self.allowed_fake_models:
+            raise ValueError("FAKE_AGENT_MODEL must be present in FAKE_AGENT_ALLOWED_MODELS")
+        if self.agent_max_conversation_bytes < self.agent_max_message_bytes:
+            raise ValueError("agent conversation limit must be at least one message")
         return self
+
+    @property
+    def allowed_ollama_models(self) -> frozenset[str]:
+        """Return the bounded configured Ollama model allowlist."""
+
+        return _model_allowlist(self.ollama_allowed_models)
+
+    @property
+    def allowed_fake_models(self) -> frozenset[str]:
+        """Return the bounded configured fake-provider model allowlist."""
+
+        return _model_allowlist(self.fake_agent_allowed_models)
 
 
 @lru_cache(maxsize=1)
@@ -96,3 +143,10 @@ def get_settings() -> Settings:
     """Return the process settings through one controlled cache."""
 
     return Settings()
+
+
+def _model_allowlist(value: str) -> frozenset[str]:
+    models = frozenset(item.strip() for item in value.split(",") if item.strip())
+    if not models or len(models) > 32 or any(len(model) > 255 for model in models):
+        raise ValueError("model allowlist is invalid")
+    return models

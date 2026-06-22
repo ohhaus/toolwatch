@@ -50,6 +50,15 @@ blocked or invalid calls must never reach downstream adapters.
 | Sensitive browser history | Sensitive pages cached in HTMX history or browser back-forward cache | `Cache-Control: no-store` and `htmx-config` `historyCacheSize:0` |
 | Trace-link manipulation | Attacker controls a parameter to forge a Jaeger URL | Jaeger base URL comes from trusted settings; trace ID validated against W3C lowercase 32-hex; link omitted on mismatch; `rel="noopener noreferrer"` applied |
 | Denial of service through dashboard filters | An operator submits a giant page size or unbounded scan | `DASHBOARD_MAX_PAGE_SIZE` clamps page size; query services use bounded per-session call limits; deterministic ordering and pagination |
+| Model invents a tool | Ollama requests `shell.execute` | Resolve only through the provider-name map built from enabled registered tools; return `unknown_tool`; never invoke an adapter |
+| Malformed model tool call | Arguments are a string, oversized object, or invalid JSON | Parse into strict internal types, enforce bounds, then run registered JSON Schema validation before adapters |
+| Repeated blocked calls | A model retries destructive SQL indefinitely | Return only a safe blocked result and enforce turn/total-tool/per-turn limits |
+| Tool-result prompt injection | A fixture asks the model to reveal data or call another tool | Mark output as untrusted in the fixed system prompt; sanitize it; route every subsequent request through deterministic controls |
+| Agent-loop resource exhaustion | Model loops, emits huge messages, or stalls | Bound turns, tool calls, exposed tools, message bytes, conversation bytes, provider response bytes, model-call timeout, and run timeout |
+| Ollama endpoint spoofing | Configuration points to credentials or a remote attacker | Accept only credential-free localhost/loopback HTTP(S) URLs from trusted configuration; never accept a URL in API input |
+| Model allowlist bypass | Caller selects an arbitrary installed model | Separate trusted fake/Ollama allowlists; validate defaults and requests; expose no pull or model-management API |
+| Thinking leakage | Provider returns hidden reasoning containing secrets | Discard thinking immediately; omit it from domain persistence, API, audit, telemetry, logs, and dashboard |
+| Unsafe conversation persistence | Prompts or raw tool results are stored for replay | Keep only a bounded redacted in-memory history; persist safe run/model metadata and redacted final content only |
 
 ## Current attack surface
 

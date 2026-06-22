@@ -36,6 +36,16 @@ services:
       DASHBOARD_REFRESH_SECONDS: 10
       ATTACK_LAB_ENABLED: "true"
       JAEGER_UI_PUBLIC_URL: http://localhost:16686
+      AGENT_PROVIDER: fake
+      OLLAMA_MODEL: qwen3:4b
+      OLLAMA_ALLOWED_MODELS: qwen3:4b
+      FAKE_AGENT_MODEL: fake-v1
+      FAKE_AGENT_ALLOWED_MODELS: fake-v1
+      OLLAMA_THINK: "false"
+      AGENT_MAX_TURNS: 8
+      AGENT_MAX_TOOL_CALLS: 16
+      AGENT_MAX_TOOLS_PER_TURN: 4
+      AGENT_RUN_TIMEOUT_SECONDS: 180
     command:
       - /bin/sh
       - -c
