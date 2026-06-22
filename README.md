@@ -1,14 +1,26 @@
 # ToolWatch
 
-ToolWatch is an observability and runtime-safety proxy for AI-agent tool calls. It is
-designed to validate calls, apply deterministic safety controls, redact sensitive data,
-and provide auditability before trusted adapters reach downstream services. The current
-milestone implements Security Pipeline v1 for three trusted in-process mock adapters:
-recursive redaction, deterministic risk/rules, sanitized persistence, audit events, and
-PostgreSQL-backed replay. Ollama Agent Loop v1 optionally connects a developer-managed
-local model while keeping every model-requested tool call inside the same ToolWatch
-execution pipeline. It does not connect to any real GitHub, email, database, or other
-external service.
+ToolWatch is an observability and runtime-safety proxy between AI agents and their tool
+adapters. It validates untrusted arguments, redacts secrets, makes deterministic
+allow/flag/block decisions, prevents blocked downstream execution, and records sanitized
+audit and telemetry evidence.
+
+```text
+Agent → ToolWatch registry → validation → redaction → risk/rules → trusted mock adapter
+                                         └─ block → audit only; adapter never called
+```
+
+Example:
+
+```text
+Agent requests destructive SQL
+→ ToolWatch classifies CRITICAL
+→ matching rule blocks execution
+→ audit event and trace created
+```
+
+ToolWatch v0.1.0 includes three in-process mock adapters only. It does not connect to real
+GitHub, email, database, or other external services.
 
 Observability v1 adds OpenTelemetry request and execution traces, safe structured-log
 correlation, append-only audit correlation, and Prometheus-compatible metrics. Telemetry
@@ -16,6 +28,24 @@ contains metadata only: prompts, arguments, results, rule evidence, adapter conf
 authorization data, exception messages, and stack traces are excluded.
 
 ToolWatch is experimental and is not production-ready.
+
+> Screenshot/GIF placeholder: record the dashboard and destructive-SQL Attack Lab
+> scenario before publishing the public portfolio release.
+
+## Quick start
+
+```bash
+cp .env.example .env
+uv sync --frozen
+make infra-up
+make migrate
+make seed
+make run
+```
+
+Open <http://localhost:8000/ui>. For the guided v0.1.0 demonstration, run
+`scripts/demo_v010.sh`; add `--ollama` for the optional local model and `--cleanup` to
+stop infrastructure afterward.
 
 ## Architecture
 
@@ -27,7 +57,8 @@ Only sanitized arguments and result bodies cross the persistence, audit, logging
 read-API boundary. Raw values exist transiently inside validated execution only.
 
 See [the architecture guide](docs/architecture.md), [product specification](docs/product-spec.md),
-and [threat model](docs/threat-model.md).
+ [threat model](docs/threat-model.md), [release notes](docs/releases/0.1.0.md), and
+[portfolio evidence](docs/portfolio.md).
 
 ## Prerequisites
 

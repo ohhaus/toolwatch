@@ -64,8 +64,9 @@ effect.
 
 There is no distributed transaction with an adapter. A process crash after an adapter
 side effect and before terminal persistence can leave an `executing` row. Adapter
-cancellation after timeout is cooperative. Automatic retries and recovery workers are
-deliberately deferred.
+cancellation after timeout is cooperative. The explicit recovery command locks stale
+rows in bounded batches with `FOR UPDATE SKIP LOCKED`, changes them to failed with an
+unknown/interrupted error code, and never retries a possible side effect.
 
 The original execution choices are recorded in
 [ADR 0003](adr/0003-tool-call-execution-v1.md); the security boundary is recorded in
@@ -252,3 +253,19 @@ optional redacted final answer. `model_calls` stores turn, status, token counts,
 durations. Neither table has prompt, message, response, argument, result, or thinking
 columns. `tool_calls.agent_run_id` links every mediated call. See
 [ADR 0007](adr/0007-ollama-agent-loop-v1.md).
+
+## Release hardening v0.1.0
+
+`RecoveryService` processes stale tool calls, agent runs, and model calls in separate
+short PostgreSQL transactions. Composite status/time indexes support the selection path.
+Every transition is terminal, idempotent, audited, and metered.
+
+The shutdown coordinator rejects new HTTP work, waits for in-flight request tasks up to
+`SHUTDOWN_GRACE_PERIOD_SECONDS`, then cancels remaining coroutines. It closes the
+reusable Ollama HTTPX client, flushes telemetry, and disposes SQLAlchemy last.
+Cancellation cannot roll back an external side effect; ambiguous persisted state is
+handled by the recovery command.
+
+The release image runs as `toolwatch`, supports a read-only root filesystem with `/tmp`
+tmpfs, sets OCI labels and a healthcheck, and uses `SIGTERM`. Wheel metadata takes its
+version from `toolwatch.__version__`; wheel and sdist include dashboard assets.

@@ -28,17 +28,17 @@ def test_correlation_and_trace_identifier_validation() -> None:
 
 
 def test_attribute_and_metric_label_allowlists_drop_or_reject_unknown_data() -> None:
-    secret = "UNIQUE_ATTRIBUTE_SECRET_417c"
+    sentinel = "sentinel-attribute-417c"
 
     assert safe_span_attributes(
         {
             "gen_ai.tool.name": "demo.execute",
-            "tool.arguments": secret,
-            "exception.message": secret,
+            "tool.arguments": sentinel,
+            "exception.message": sentinel,
         }
     ) == {"gen_ai.tool.name": "demo.execute"}
     with pytest.raises(ValueError):
-        validate_metric_labels({"correlation_id": secret})
+        validate_metric_labels({"correlation_id": sentinel})
 
 
 def test_metrics_are_isolated_and_use_explicit_buckets() -> None:

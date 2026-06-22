@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     agent_max_provider_response_bytes: int = Field(default=1_048_576, ge=1)
     agent_run_timeout_seconds: float = Field(default=180.0, gt=0, le=600)
     agent_store_final_answer: bool = True
+    recovery_enabled: bool = True
+    tool_call_stale_after_seconds: int = Field(default=300, ge=1, le=86_400)
+    agent_run_stale_after_seconds: int = Field(default=300, ge=1, le=86_400)
+    model_call_stale_after_seconds: int = Field(default=180, ge=1, le=86_400)
+    recovery_batch_size: int = Field(default=100, ge=1, le=1_000)
+    shutdown_grace_period_seconds: float = Field(default=15.0, gt=0, le=300)
+    docs_enabled: bool = True
+    trusted_hosts: str = "localhost,127.0.0.1,test,api,attack-lab"
+    max_http_request_bytes: int = Field(default=1_048_576, ge=1, le=16_777_216)
 
     @model_validator(mode="after")
     def validate_redaction_key(self) -> "Settings":
@@ -136,6 +145,15 @@ class Settings(BaseSettings):
         """Return the bounded configured fake-provider model allowlist."""
 
         return _model_allowlist(self.fake_agent_allowed_models)
+
+    @property
+    def allowed_hosts(self) -> list[str]:
+        """Return the configured finite HTTP Host allowlist."""
+
+        hosts = [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
+        if not hosts or len(hosts) > 32 or any(len(host) > 255 for host in hosts):
+            raise ValueError("TRUSTED_HOSTS is invalid")
+        return hosts
 
 
 @lru_cache(maxsize=1)

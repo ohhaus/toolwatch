@@ -111,7 +111,11 @@ async def ollama_health(
 
     if settings.agent_provider != "ollama":
         return OllamaHealthResponse(status="disabled", provider="fake")
-    available = await OllamaAgentProvider(settings.ollama_base_url).health()
+    provider = OllamaAgentProvider(settings.ollama_base_url)
+    try:
+        available = await provider.health()
+    finally:
+        await provider.aclose()
     return OllamaHealthResponse(
         status="available" if available else "degraded",
         provider="ollama",

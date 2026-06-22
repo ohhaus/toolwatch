@@ -46,10 +46,22 @@ services:
       AGENT_MAX_TOOL_CALLS: 16
       AGENT_MAX_TOOLS_PER_TURN: 4
       AGENT_RUN_TIMEOUT_SECONDS: 180
+      RECOVERY_ENABLED: "true"
+      TOOL_CALL_STALE_AFTER_SECONDS: 300
+      AGENT_RUN_STALE_AFTER_SECONDS: 300
+      MODEL_CALL_STALE_AFTER_SECONDS: 180
+      RECOVERY_BATCH_SIZE: 100
+      SHUTDOWN_GRACE_PERIOD_SECONDS: 15
     command:
       - /bin/sh
       - -c
       - alembic upgrade head && exec uvicorn toolwatch.main:app --host 0.0.0.0 --port 8000
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       postgres:
         condition: service_healthy

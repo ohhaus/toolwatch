@@ -719,10 +719,10 @@ async def test_trace_audit_correlation_filters_and_telemetry_secret_safety(
 ) -> None:
     configure_database(monkeypatch, clean_database)
     telemetry, exporter = build_in_memory_runtime()
-    input_secret = "UNIQUE_TRACE_INPUT_SECRET_53f01b"
-    output_secret = "UNIQUE_TRACE_OUTPUT_SECRET_d427c9"
-    prompt_secret = "UNIQUE_TRACE_PROMPT_SECRET_1128da"
-    rule_evidence_secret = "UNIQUE_RULE_EVIDENCE_SECRET_f302"
+    input_secret = "sentinel-trace-input-53f01b"
+    output_secret = "sentinel-trace-output-d427c9"
+    prompt_sentinel = "sentinel-trace-prompt-1128da"
+    rule_evidence_secret = "sentinel-rule-evidence-f302"
     adapter = CountingAdapter({"payload": f"Bearer {output_secret}"})
     registry = AdapterRegistry({"trace_test": adapter})
     request = {
@@ -757,7 +757,7 @@ async def test_trace_audit_correlation_filters_and_telemetry_secret_safety(
                     "provider": "test",
                     "model_name": "deterministic",
                 },
-                "user_prompt": f"Bearer {prompt_secret}",
+                "user_prompt": f"Bearer {prompt_sentinel}",
             },
         )
         correlation_id = str(uuid4())
@@ -814,7 +814,7 @@ async def test_trace_audit_correlation_filters_and_telemetry_secret_safety(
     for secret in (
         input_secret,
         output_secret,
-        prompt_secret,
+        prompt_sentinel,
         rule_evidence_secret,
     ):
         assert secret not in serialized

@@ -39,6 +39,11 @@ blocked or invalid calls must never reach downstream adapters.
 | Telemetry backend outage | Jaeger is unavailable during execution | Fail telemetry open, keep audit authoritative, expose safe degraded status, never fail readiness solely for Jaeger |
 | Payload exhaustion | Deep or oversized JSON consumes memory or storage | Canonical byte, depth, and string limits before execution and before return |
 | Crash after side effect | Process exits before terminal state commits | Idempotency reduces replay risk; fail closed on unresolved keys; document lack of distributed transaction |
+| Automatic replay after a crash | A stale `executing` call is submitted again | Recovery marks it `failed/execution_state_unknown`, audits it, and never invokes an adapter |
+| Concurrent recovery | Two operators run recovery at once | Bounded `FOR UPDATE SKIP LOCKED` batches and status predicates give one terminal transition |
+| Shutdown during provider/tool I/O | Coroutine cancellation leaves non-terminal state | Reject new work, bound draining, close clients, preserve recoverable state; never claim rollback of an external effect |
+| Oversized HTTP request | Caller declares a body larger than application limits | Reject before route handling; retain inner canonical payload limits |
+| Host-header poisoning | Untrusted Host reaches URL construction | Trusted-host allowlist from configuration |
 | Stored XSS in dashboard | Tool output, audit evidence, or rule condition contains a `<script>` payload | Jinja autoescape stays on for every template; tool output is never rendered as HTML; sanitized JSON appears inside `<pre>` blocks; `|safe` is never used on tool- or audit-controlled content |
 | Reflected XSS in dashboard | A query-string filter is echoed into HTML | Filter values are bound through Pydantic-like type narrowing in the router (trace_id, UUID, enum) and reflected only through autoescape |
 | Malicious tool output in HTML | A tool returns HTML, attributes, or instructions | Result payload renders only as escaped JSON text; never used in `innerHTML` paths client-side |
@@ -81,5 +86,7 @@ payload bodies, arbitrary URLs, or exception text into telemetry. Jaeger is opti
 its availability does not gate the API.
 
 Known limitations include heuristic secret and prompt-injection detection, Python regex
-execution despite conservative pattern validation, cooperative timeout cancellation, and
-no automated recovery for calls left `executing` by a process crash.
+execution despite conservative pattern validation, cooperative timeout cancellation,
+declared-length HTTP rejection rather than a streaming gateway limit, and inability to
+prove whether an external side effect happened before a crash. Recovery deliberately
+marks that state unknown instead of retrying.

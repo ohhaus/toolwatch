@@ -167,6 +167,24 @@ class SqlAlchemyAgentRunRepository:
         await self._session.flush()
         return _agent_run_from_model(model)
 
+    async def claim_stale_running(
+        self,
+        *,
+        updated_before: datetime,
+        limit: int,
+    ) -> list_type[AgentRun]:
+        statement = (
+            select(AgentRunModel)
+            .where(
+                AgentRunModel.status == AgentRunStatus.RUNNING.value,
+                AgentRunModel.updated_at < updated_before,
+            )
+            .order_by(AgentRunModel.updated_at, AgentRunModel.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return [_agent_run_from_model(model) for model in await self._session.scalars(statement)]
+
 
 class SqlAlchemyModelCallRepository:
     """Persist safe provider-call metadata."""
@@ -202,6 +220,24 @@ class SqlAlchemyModelCallRepository:
         model.finished_at = call.finished_at
         await self._session.flush()
         return _model_call_from_model(model)
+
+    async def claim_stale_started(
+        self,
+        *,
+        started_before: datetime,
+        limit: int,
+    ) -> list[ModelCall]:
+        statement = (
+            select(ModelCallModel)
+            .where(
+                ModelCallModel.status == ModelCallStatus.STARTED.value,
+                ModelCallModel.started_at < started_before,
+            )
+            .order_by(ModelCallModel.started_at, ModelCallModel.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return [_model_call_from_model(model) for model in await self._session.scalars(statement)]
 
 
 class SqlAlchemyToolRepository:
@@ -444,6 +480,24 @@ class SqlAlchemyToolCallRepository:
         model.updated_at = call.updated_at
         await self._session.flush()
         return _tool_call_from_model(model)
+
+    async def claim_stale_executing(
+        self,
+        *,
+        updated_before: datetime,
+        limit: int,
+    ) -> list_type[ToolCall]:
+        statement = (
+            select(ToolCallModel)
+            .where(
+                ToolCallModel.status == ToolCallStatus.EXECUTING.value,
+                ToolCallModel.updated_at < updated_before,
+            )
+            .order_by(ToolCallModel.updated_at, ToolCallModel.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return [_tool_call_from_model(model) for model in await self._session.scalars(statement)]
 
 
 class SqlAlchemyToolResultMetadataRepository:

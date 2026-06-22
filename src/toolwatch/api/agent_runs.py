@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from toolwatch.api.dependencies import (
     get_adapter_registry,
     get_agent_providers,
+    get_shutdown_manager,
     get_telemetry,
     get_uow_factory,
 )
@@ -32,6 +33,7 @@ from toolwatch.domain.agents import (
     ModelCallStatus,
 )
 from toolwatch.infrastructure.adapters import AdapterRegistry
+from toolwatch.shutdown import ShutdownManager
 from toolwatch.telemetry import TelemetryRuntime
 
 router = APIRouter(prefix="/api/v1/agent-runs", tags=["agent-runs"])
@@ -120,6 +122,7 @@ AdapterDependency = Annotated[AdapterRegistry, Depends(get_adapter_registry)]
 ProviderDependency = Annotated[Mapping[str, AgentProvider], Depends(get_agent_providers)]
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
 TelemetryDependency = Annotated[TelemetryRuntime, Depends(get_telemetry)]
+ShutdownDependency = Annotated[ShutdownManager, Depends(get_shutdown_manager)]
 
 
 @router.post(
@@ -139,6 +142,7 @@ async def start_agent_run(
     providers: ProviderDependency,
     settings: SettingsDependency,
     telemetry: TelemetryDependency,
+    shutdown: ShutdownDependency,
 ) -> AgentRunResponse:
     service = AgentRunService(
         uow_factory=uow_factory,
@@ -146,6 +150,7 @@ async def start_agent_run(
         providers=providers,
         settings=settings,
         telemetry=telemetry,
+        accepting_work=lambda: shutdown.accepting,
     )
     result = await service.start(
         StartAgentRun(
@@ -171,6 +176,7 @@ async def get_agent_run(
     providers: ProviderDependency,
     settings: SettingsDependency,
     telemetry: TelemetryDependency,
+    shutdown: ShutdownDependency,
 ) -> AgentRunResponse:
     service = AgentRunService(
         uow_factory=uow_factory,
@@ -178,6 +184,7 @@ async def get_agent_run(
         providers=providers,
         settings=settings,
         telemetry=telemetry,
+        accepting_work=lambda: shutdown.accepting,
     )
     return _detail_response(await service.get(run_id))
 
@@ -189,6 +196,7 @@ async def list_agent_runs(
     providers: ProviderDependency,
     settings: SettingsDependency,
     telemetry: TelemetryDependency,
+    shutdown: ShutdownDependency,
     session_id: Annotated[UUID | None, Query()] = None,
     provider: Annotated[str | None, Query(min_length=1, max_length=50)] = None,
     model: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
@@ -204,6 +212,7 @@ async def list_agent_runs(
         providers=providers,
         settings=settings,
         telemetry=telemetry,
+        accepting_work=lambda: shutdown.accepting,
     )
     page = await service.list(
         AgentRunFilters(

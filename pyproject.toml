@@ -1,9 +1,20 @@
 [project]
 name = "toolwatch"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Observability and runtime-safety proxy for AI-agent tool calls"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "Apache-2.0"
+authors = [{ name = "ToolWatch contributors" }]
+keywords = ["ai-agents", "observability", "runtime-security", "tool-calls"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
 dependencies = [
     "alembic>=1.16.5",
     "asyncpg>=0.30.0",
@@ -35,12 +46,20 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/toolwatch/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/alembic",
+    "/alembic.ini",
+    "/README.md",
+    "/LICENSE",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/toolwatch"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/toolwatch/web/templates" = "toolwatch/web/templates"
-"src/toolwatch/web/static" = "toolwatch/web/static"
 
 [tool.pytest.ini_options]
 addopts = "-ra"

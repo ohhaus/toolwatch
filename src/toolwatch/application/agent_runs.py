@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from builtins import list as list_type
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from time import perf_counter
@@ -177,11 +177,13 @@ class AgentRunService:
         providers: Mapping[str, AgentProvider],
         settings: Settings,
         telemetry: TelemetryRuntime | None = None,
+        accepting_work: Callable[[], bool] | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._adapters = adapters
         self._providers = dict(providers)
         self._settings = settings
+        self._accepting_work = accepting_work or (lambda: True)
         self._telemetry = telemetry or TelemetryRuntime(
             tracing=Tracing(None), metrics=Metrics(enabled=False)
         )
@@ -509,6 +511,8 @@ class AgentRunService:
         messages: Sequence[AgentMessage],
         tools: Sequence[ProviderToolDefinition],
     ) -> AgentProviderResponse:
+        if not self._accepting_work():
+            raise AgentLoopFailure("application_shutting_down")
         correlation = current_correlation()
         model_call = ModelCall(
             agent_run_id=run.id,

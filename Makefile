@@ -1,7 +1,10 @@
 .PHONY: install infra-up infra-down run migrate seed test test-unit test-integration
 .PHONY: test-domain test-api test-web
-.PHONY: lint format typecheck check docker-build docker-up docker-down
+.PHONY: lint format typecheck check docker-build docker-up docker-down recover
+.PHONY: build package-check image image-smoke sbom security-scan load-seed load-test query-plans
+.PHONY: workflow-check
 .PHONY: attack-list attack-run attack-run-all demo verify-jaeger agent-demo verify-ollama-agent
+.PHONY: test-local-llm-repeat
 
 install:
 	uv sync --frozen
@@ -17,6 +20,9 @@ run:
 
 migrate:
 	uv run alembic upgrade head
+
+recover:
+	uv run python -m toolwatch.recovery run
 
 seed:
 	uv run python -m toolwatch.seed
@@ -49,6 +55,43 @@ typecheck:
 
 check: lint typecheck test
 
+build:
+	rm -rf dist
+	uv build
+
+package-check:
+	UV_CACHE_DIR=$(or $(UV_CACHE_DIR),/tmp/toolwatch-uv-cache) uv run python scripts/package_check.py
+
+image:
+	docker build \
+		--build-arg VERSION=0.1.0 \
+		--build-arg REVISION=$(or $(REVISION),local) \
+		--build-arg SOURCE_URL=$(or $(SOURCE_URL),https://example.invalid/toolwatch) \
+		-t toolwatch:0.1.0 .
+
+image-smoke:
+	uv run python scripts/image_smoke.py
+
+sbom:
+	uv run python scripts/generate_sbom.py --output dist/toolwatch-python.spdx.json
+	uv run python scripts/generate_sbom.py --image toolwatch:0.1.0 --output dist/toolwatch-image.spdx.json
+
+security-scan:
+	uvx --from pip-audit==2.9.0 pip-audit
+	uvx --from bandit==1.8.6 bandit -q -r src
+
+load-test:
+	uv run python scripts/load_test.py $(LOAD_ARGS)
+
+load-seed:
+	uv run python scripts/seed_load.py
+
+query-plans:
+	uv run python scripts/query_plans.py
+
+workflow-check:
+	uv run python scripts/validate_workflows.py
+
 docker-build:
 	docker compose build api
 
@@ -78,6 +121,9 @@ agent-demo:
 
 verify-ollama-agent:
 	uv run python scripts/verify_ollama_agent.py
+
+test-local-llm-repeat:
+	uv run python scripts/repeat_local_llm.py --count $(or $(COUNT),5)
 
 demo:
 	docker compose --profile observability up -d postgres jaeger

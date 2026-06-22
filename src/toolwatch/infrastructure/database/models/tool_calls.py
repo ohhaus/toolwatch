@@ -64,6 +64,7 @@ class ToolCallModel(Base):
         ),
         Index("ix_tool_calls_session_id", "session_id"),
         Index("ix_tool_calls_status", "status"),
+        Index("ix_tool_calls_status_updated_at", "status", "updated_at"),
         Index("ix_tool_calls_created_at", "created_at"),
         Index("ix_tool_calls_tool_definition_id", "tool_definition_id"),
         Index("ix_tool_calls_agent_run_id", "agent_run_id"),

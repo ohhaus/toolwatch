@@ -43,12 +43,13 @@ async def _run(prompt: str, provider_name: str | None, model_name: str | None) -
         )
     )
     telemetry = build_telemetry_runtime(settings)
+    ollama = OllamaAgentProvider(settings.ollama_base_url)
     service = AgentRunService(
         uow_factory=uow_factory,
         adapters=get_adapter_registry(),
         providers={
             "fake": FakeAgentProvider(),
-            "ollama": OllamaAgentProvider(settings.ollama_base_url),
+            "ollama": ollama,
         },
         settings=settings,
         telemetry=telemetry,
@@ -76,6 +77,7 @@ async def _run(prompt: str, provider_name: str | None, model_name: str | None) -
             print(f"trace: {settings.jaeger_ui_public_url.rstrip('/')}/trace/{result.run.trace_id}")
         return 0
     finally:
+        await ollama.aclose()
         telemetry.shutdown()
         await dispose_engine()
 

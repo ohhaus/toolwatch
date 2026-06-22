@@ -214,16 +214,35 @@ class ModelCallRepository(Protocol):
 class UnitOfWork(Protocol):
     """Transaction boundary owned by an application use case."""
 
-    agents: AgentRepository
-    tools: ToolRepository
-    sessions: SessionRepository
-    tool_calls: ToolCallRepository
-    tool_results: ToolResultMetadataRepository
-    risk_flags: RiskFlagRepository
-    rules: BlockingRuleRepository
-    audit_events: AuditEventRepository
-    agent_runs: AgentRunRepository
-    model_calls: ModelCallRepository
+    @property
+    def agents(self) -> AgentRepository: ...
+
+    @property
+    def tools(self) -> ToolRepository: ...
+
+    @property
+    def sessions(self) -> SessionRepository: ...
+
+    @property
+    def tool_calls(self) -> ToolCallRepository: ...
+
+    @property
+    def tool_results(self) -> ToolResultMetadataRepository: ...
+
+    @property
+    def risk_flags(self) -> RiskFlagRepository: ...
+
+    @property
+    def rules(self) -> BlockingRuleRepository: ...
+
+    @property
+    def audit_events(self) -> AuditEventRepository: ...
+
+    @property
+    def agent_runs(self) -> AgentRunRepository: ...
+
+    @property
+    def model_calls(self) -> ModelCallRepository: ...
 
     async def __aenter__(self) -> Self: ...
 

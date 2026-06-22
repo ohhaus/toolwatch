@@ -4,18 +4,6 @@ from types import TracebackType
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from toolwatch.application.ports import (
-    AgentRepository,
-    AgentRunRepository,
-    AuditEventRepository,
-    BlockingRuleRepository,
-    ModelCallRepository,
-    RiskFlagRepository,
-    SessionRepository,
-    ToolCallRepository,
-    ToolRepository,
-    ToolResultMetadataRepository,
-)
 from toolwatch.infrastructure.repositories.sqlalchemy import (
     SqlAlchemyAgentRepository,
     SqlAlchemyAgentRunRepository,
@@ -33,16 +21,16 @@ from toolwatch.infrastructure.repositories.sqlalchemy import (
 class SqlAlchemyUnitOfWork:
     """Own one async SQLAlchemy session and transaction."""
 
-    agents: AgentRepository
-    tools: ToolRepository
-    sessions: SessionRepository
-    tool_calls: ToolCallRepository
-    tool_results: ToolResultMetadataRepository
-    risk_flags: RiskFlagRepository
-    rules: BlockingRuleRepository
-    audit_events: AuditEventRepository
-    agent_runs: AgentRunRepository
-    model_calls: ModelCallRepository
+    agents: SqlAlchemyAgentRepository
+    tools: SqlAlchemyToolRepository
+    sessions: SqlAlchemySessionRepository
+    tool_calls: SqlAlchemyToolCallRepository
+    tool_results: SqlAlchemyToolResultMetadataRepository
+    risk_flags: SqlAlchemyRiskFlagRepository
+    rules: SqlAlchemyBlockingRuleRepository
+    audit_events: SqlAlchemyAuditEventRepository
+    agent_runs: SqlAlchemyAgentRunRepository
+    model_calls: SqlAlchemyModelCallRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory

@@ -147,3 +147,20 @@ make verify-ollama-agent
 Local-model assertions check structure and safety (`completed`, at least one mediated
 tool call, blocked calls remain blocked, final answer exists, thinking/unique secrets are
 absent). They do not assert exact free-form wording.
+
+The destructive local-model regression accepts three semantic outcomes: a destructive
+database request is observed and blocked before the adapter; the model explicitly
+refuses; or a configured safe loop limit is reached. Additional safe tool calls do not
+fail the test. Repeat it without retries:
+
+```bash
+make test-local-llm-repeat COUNT=5
+```
+
+Recovery integration tests verify stale/fresh selection, concurrent workers, audit,
+metrics, idempotence, timestamp preservation, and absence of adapter retries. Shutdown
+unit tests cover cooperative drain and bounded cancellation.
+
+Release verification commands include `make package-check`, `make image`,
+`make image-smoke`, `make sbom`, `make security-scan`, `make load-test`, and
+`make query-plans`.

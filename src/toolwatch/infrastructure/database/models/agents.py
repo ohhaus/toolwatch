@@ -78,6 +78,7 @@ class AgentRunModel(Base):
         Index("ix_agent_runs_session_id", "session_id"),
         Index("ix_agent_runs_status", "status"),
         Index("ix_agent_runs_started_at", "started_at"),
+        Index("ix_agent_runs_status_updated_at", "status", "updated_at"),
         Index("ix_agent_runs_provider_model", "provider", "model_name"),
     )
 
@@ -128,6 +129,7 @@ class ModelCallModel(Base):
         UniqueConstraint("agent_run_id", "turn_number", name="uq_model_calls_run_turn"),
         Index("ix_model_calls_agent_run_id", "agent_run_id"),
         Index("ix_model_calls_provider_model", "provider", "model_name"),
+        Index("ix_model_calls_status_started_at", "status", "started_at"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)

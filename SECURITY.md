@@ -4,8 +4,9 @@ ToolWatch is an experimental project and is not yet production-ready.
 
 Do not open public issues for suspected vulnerabilities.
 
-Report vulnerabilities privately through GitHub Security Advisories
-or by contacting: <your security email>.
+Report vulnerabilities privately through GitHub Security Advisories for the repository.
+If private reporting is unavailable, contact a maintainer through a non-public channel
+before disclosing details.
 
 Please include:
 

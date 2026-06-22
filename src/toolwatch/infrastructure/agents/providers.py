@@ -113,6 +113,7 @@ class OllamaAgentProvider:
 
     def __init__(self, base_url: str) -> None:
         self._base_url = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(base_url=self._base_url)
 
     async def complete(
         self,
@@ -132,11 +133,11 @@ class OllamaAgentProvider:
         if options.keep_alive is not None:
             payload["keep_alive"] = options.keep_alive
         try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
+            response = await self._client.post(
+                "/api/chat",
+                json=payload,
                 timeout=options.timeout_seconds,
-            ) as client:
-                response = await client.post("/api/chat", json=payload)
+            )
         except httpx.TimeoutException:
             raise AgentProviderError("ollama_timeout") from None
         except httpx.HTTPError:
@@ -157,14 +158,21 @@ class OllamaAgentProvider:
         """Check Ollama availability without generating or loading a model."""
 
         try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=timeout_seconds,
-            ) as client:
-                response = await client.get("/api/tags")
+            response = await self._client.get("/api/tags", timeout=timeout_seconds)
             return response.status_code == 200
         except httpx.HTTPError:
             return False
+
+    async def aclose(self) -> None:
+        """Close the application-owned HTTP connection pool."""
+
+        await self._client.aclose()
+
+    @property
+    def is_closed(self) -> bool:
+        """Expose coarse client lifecycle state for shutdown verification."""
+
+        return self._client.is_closed
 
 
 def _message_payload(message: AgentMessage) -> dict[str, object]:

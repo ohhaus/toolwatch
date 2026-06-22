@@ -165,6 +165,9 @@ class AuditEventType(StrEnum):
     MODEL_CALL_FAILED = "model_call.failed"
     AGENT_TOOL_CALL_REQUESTED = "agent_tool_call.requested"
     AGENT_TOOL_CALL_COMPLETED = "agent_tool_call.completed"
+    TOOL_CALL_RECOVERED = "tool_call.recovered"
+    AGENT_RUN_RECOVERED = "agent_run.recovered"
+    MODEL_CALL_RECOVERED = "model_call.recovered"
 
 
 @dataclass(frozen=True, slots=True)
