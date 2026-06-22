@@ -5,7 +5,8 @@ description = "Observability and runtime-safety proxy for AI-agent tool calls"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
-authors = [{ name = "ToolWatch contributors" }]
+authors = [{ name = "Michael Kovalev", email = "ohhaus84@gmail.com" }]
+maintainers = [{ name = "Michael Kovalev", email = "ohhaus84@gmail.com" }]
 keywords = ["ai-agents", "observability", "runtime-security", "tool-calls"]
 classifiers = [
     "Development Status :: 3 - Alpha",

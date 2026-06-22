@@ -59,7 +59,7 @@ def main() -> int:
                 ],
                 "licenseConcluded": "NOASSERTION",
                 "licenseDeclared": "Apache-2.0",
-                "copyrightText": "Copyright 2026 ToolWatch contributors",
+                "copyrightText": "Copyright 2026 Michael Kovalev (ohhaus) <ohhaus84@gmail.com>",
             },
         )
     namespace_seed = json.dumps(
