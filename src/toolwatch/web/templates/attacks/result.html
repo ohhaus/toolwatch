@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Attack {{ result.scenario.name }} result{% endblock %}
+{% block content %}
+  <a class="back-link" href="{{ url('attack_detail', scenario_id=result.scenario.id) }}">← {{ result.scenario.name }}</a>
+  <h1 class="page-title">{{ result.scenario.name }}</h1>
+  {% if result.passed %}
+    <p class="status-banner tone-success" role="status">PASSED — observed outcome matches expectations.</p>
+  {% else %}
+    <p class="status-banner tone-error" role="alert">FAILED — see assertions below.</p>
+  {% endif %}
+  <dl class="meta">
+    <dt>Duration</dt><dd>{{ result.duration_ms | duration_label }}</dd>
+    {% if result.observed_status %}
+      <dt>Observed status</dt>
+      <dd>{% with value = result.observed_status %}{% include "components/status_badge.html" %}{% endwith %}</dd>
+    {% endif %}
+    {% if result.observed_decision %}
+      <dt>Observed decision</dt>
+      <dd><span class="badge {{ result.observed_decision | decision_tone }}">{{ result.observed_decision }}</span></dd>
+    {% endif %}
+    {% if result.observed_risk %}
+      <dt>Observed risk</dt>
+      <dd>{% with value = result.observed_risk %}{% include "components/risk_badge.html" %}{% endwith %}</dd>
+    {% endif %}
+    {% if result.observed_flags %}
+      <dt>Observed flags</dt>
+      <dd>{% for f in result.observed_flags %}<span class="chip">{{ f }}</span>{% endfor %}</dd>
+    {% endif %}
+    {% if result.matched_rules %}
+      <dt>Matched rules</dt>
+      <dd>{% for n in result.matched_rules %}<span class="chip tone-warning">{{ n }}</span>{% endfor %}</dd>
+    {% endif %}
+    {% if result.adapter_called is not none %}
+      <dt>Adapter called</dt>
+      <dd>{{ 'yes' if result.adapter_called else 'no' }}</dd>
+    {% endif %}
+    {% if result.replayed %}
+      <dt>Replayed</dt><dd>yes</dd>
+    {% endif %}
+    {% if result.tool_call_id %}
+      <dt>Tool call</dt>
+      <dd>
+        <a href="{{ url('tool_call_detail', call_id=result.tool_call_id) }}">{{ result.tool_call_id }}</a>
+      </dd>
+    {% endif %}
+    {% if result.session_id %}
+      <dt>Session</dt>
+      <dd>
+        <a href="{{ url('session_detail', session_id=result.session_id) }}">{{ result.session_id }}</a>
+      </dd>
+    {% endif %}
+    {% if result.trace_id %}
+      <dt>Trace</dt><dd class="mono">{{ result.trace_id }}</dd>
+    {% endif %}
+    {% if result.correlation_id %}
+      <dt>Correlation</dt><dd class="mono">{{ result.correlation_id }}</dd>
+    {% endif %}
+  </dl>
+
+  <section class="panel" aria-labelledby="assertions-heading">
+    <h2 id="assertions-heading">Assertions</h2>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Result</th>
+          <th scope="col">Expected</th>
+          <th scope="col">Observed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for assertion in result.assertions %}
+          <tr>
+            <td>{{ assertion.name }}</td>
+            <td>
+              {% if assertion.passed %}
+                <span class="badge tone-success">pass</span>
+              {% else %}
+                <span class="badge tone-error">fail</span>
+              {% endif %}
+            </td>
+            <td class="mono">{{ assertion.expected }}</td>
+            <td class="mono">{{ assertion.observed_safe }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

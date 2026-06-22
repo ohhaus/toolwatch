@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="htmx-config" content='{"historyCacheSize":0,"includeIndicatorStyles":false}' />
+    <title>{% block title %}ToolWatch{% endblock %}</title>
+    <link rel="stylesheet" href="{{ static_url('toolwatch.css') }}" />
+    <script src="{{ static_url('htmx.min.js') }}" defer></script>
+  </head>
+  <body>
+    <header class="topbar" role="banner">
+      <a class="brand" href="{{ url('dashboard_home') }}">ToolWatch</a>
+      <nav class="nav" aria-label="Primary">
+        <a href="{{ url('dashboard_home') }}">Dashboard</a>
+        <a href="{{ url('sessions_list') }}">Sessions</a>
+        <a href="{{ url('rules_list') }}">Rules</a>
+        <a href="{{ url('audit_list') }}">Audit</a>
+        {% if attack_lab_enabled %}
+          <a href="{{ url('attacks_index') }}">Attack Lab</a>
+        {% endif %}
+      </nav>
+      <div class="env-pill" aria-label="Environment">{{ environment }}</div>
+    </header>
+    <main class="main" role="main">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="footer" role="contentinfo">
+      <p>
+        Sanitized read-only views. Authentication is not implemented. Never expose
+        this dashboard to the public Internet.
+      </p>
+    </footer>
+  </body>
+</html>

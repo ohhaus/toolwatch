@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Tool call {{ call.id }}{% endblock %}
+{% block content %}
+  <a class="back-link" href="{{ url('session_detail', session_id=call.session_id) }}">← Session {{ call.session_id }}</a>
+  <h1 class="page-title">Tool call {{ call.id }}</h1>
+  <div class="badges">
+    {% with value = call.status %}{% include "components/status_badge.html" %}{% endwith %}
+    <span class="badge {{ call.decision | decision_tone }}">{{ call.decision }}</span>
+    {% with value = call.risk_level %}{% include "components/risk_badge.html" %}{% endwith %}
+    <span class="chip">seq #{{ call.sequence_number }}</span>
+    <span class="chip">{{ call.tool_name }}@{{ call.tool_version }}</span>
+  </div>
+  <dl class="meta">
+    <dt>Created</dt>
+    <dd><time datetime="{{ call.created_at | isoformat_utc }}">{{ call.created_at | humanize_utc }}</time></dd>
+    <dt>Started</dt>
+    <dd>
+      {% if call.started_at %}
+        <time datetime="{{ call.started_at | isoformat_utc }}">{{ call.started_at | humanize_utc }}</time>
+      {% else %}—{% endif %}
+    </dd>
+    <dt>Finished</dt>
+    <dd>
+      {% if call.finished_at %}
+        <time datetime="{{ call.finished_at | isoformat_utc }}">{{ call.finished_at | humanize_utc }}</time>
+      {% else %}—{% endif %}
+    </dd>
+    <dt>Duration</dt>
+    <dd>{{ call.duration_ms | duration_label }}</dd>
+    {% if call.error_code %}
+      <dt>Error</dt>
+      <dd class="mono">{{ call.error_code }} — {{ call.error_message_safe or '' }}</dd>
+    {% endif %}
+    {% if call.parent_call_id %}
+      <dt>Parent call</dt>
+      <dd>
+        <a href="{{ url('tool_call_detail', call_id=call.parent_call_id) }}">{{ call.parent_call_id }}</a>
+      </dd>
+    {% endif %}
+    {% if call.trace_ids %}
+      <dt>Trace IDs</dt>
+      <dd>
+        {% for tid in call.trace_ids %}<span class="mono chip">{{ tid }}</span>{% endfor %}
+      </dd>
+    {% endif %}
+    {% if call.correlation_ids %}
+      <dt>Correlation IDs</dt>
+      <dd>
+        {% for cid in call.correlation_ids %}<span class="mono chip">{{ cid }}</span>{% endfor %}
+      </dd>
+    {% endif %}
+    {% if call.jaeger_link %}
+      <dt>Jaeger</dt>
+      <dd>
+        <a class="button" href="{{ call.jaeger_link }}" target="_blank" rel="noopener noreferrer">Open trace</a>
+      </dd>
+    {% endif %}
+  </dl>
+
+  <section class="panel" aria-labelledby="args-heading">
+    <h2 id="args-heading">Sanitized arguments</h2>
+    {% if call.arguments_json %}
+      <details class="json-block" open>
+        <summary>JSON ({{ call.arguments_json | length }} chars{% if call.arguments_truncated %}, truncated{% endif %})</summary>
+        <pre class="json">{{ call.arguments_json }}</pre>
+      </details>
+    {% else %}
+      {% include "components/empty_state.html" %}
+    {% endif %}
+  </section>
+
+  <section class="panel" aria-labelledby="result-heading">
+    <h2 id="result-heading">Sanitized result</h2>
+    {% if call.result_json %}
+      <details class="json-block" open>
+        <summary>JSON ({{ call.result_json | length }} chars{% if call.result_truncated %}, truncated{% endif %})</summary>
+        <pre class="json">{{ call.result_json }}</pre>
+      </details>
+    {% else %}
+      {% include "components/empty_state.html" %}
+    {% endif %}
+  </section>
+
+  <section class="panel" aria-labelledby="flags-heading">
+    <h2 id="flags-heading">Risk flags</h2>
+    {% if call.flags %}
+      <ul class="cards">
+        {% for flag in call.flags %}
+          <li class="card">
+            <div class="badges">
+              <span class="badge {{ flag.severity | risk_tone }}">{{ flag.severity }}</span>
+              <span class="chip">{{ flag.code }}</span>
+              <span class="chip">{{ flag.source }}</span>
+            </div>
+            <p>{{ flag.message }}</p>
+            {% if flag.safe_evidence_json and flag.safe_evidence_json != '{}' %}
+              <pre class="json">{{ flag.safe_evidence_json }}</pre>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      {% include "components/empty_state.html" %}
+    {% endif %}
+  </section>
+
+  <section class="panel" aria-labelledby="rules-heading">
+    <h2 id="rules-heading">Matched rules</h2>
+    {% if call.matched_rule_names %}
+      <ul class="chip-list">
+        {% for name in call.matched_rule_names %}
+          <li><span class="chip tone-warning">{{ name }}</span></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      {% include "components/empty_state.html" %}
+    {% endif %}
+  </section>
+
+  <section class="panel" aria-labelledby="audit-heading">
+    <h2 id="audit-heading">Audit events</h2>
+    {% if call.audit_events %}
+      <ol class="timeline audit">
+        {% for event in call.audit_events %}
+          <li class="timeline-item">
+            <div class="timeline-meta">
+              <strong>{{ event.event_type }}</strong>
+              <time datetime="{{ event.created_at | isoformat_utc }}">{{ event.created_at | humanize_utc }}</time>
+            </div>
+            <div class="kv">
+              <span>actor</span><span>{{ event.actor_type }}</span>
+              {% if event.trace_id %}<span>trace</span><span class="mono">{{ event.trace_id }}</span>{% endif %}
+              {% if event.correlation_id %}<span>correlation</span><span class="mono">{{ event.correlation_id }}</span>{% endif %}
+            </div>
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      {% include "components/empty_state.html" %}
+    {% endif %}
+  </section>
+{% endblock %}

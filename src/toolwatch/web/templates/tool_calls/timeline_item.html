@@ -1,0 +1,25 @@
+<li class="timeline-item">
+  <div class="timeline-meta">
+    <a href="{{ url('tool_call_detail', call_id=call.id) }}">
+      <strong>#{{ call.sequence_number }} · {{ call.tool_name }}@{{ call.tool_version }}</strong>
+    </a>
+    <time datetime="{{ call.created_at | isoformat_utc }}">{{ call.created_at | humanize_utc }}</time>
+  </div>
+  <div class="badges">
+    {% with value = call.status %}{% include "components/status_badge.html" %}{% endwith %}
+    <span class="badge {{ call.decision | decision_tone }}">{{ call.decision }}</span>
+    {% with value = call.risk_level %}{% include "components/risk_badge.html" %}{% endwith %}
+    {% for code in call.flag_codes %}
+      <span class="chip">{{ code }}</span>
+    {% endfor %}
+    {% for name in call.matched_rule_names %}
+      <span class="chip tone-warning">rule:{{ name }}</span>
+    {% endfor %}
+  </div>
+  <div class="kv">
+    <span>duration</span><span>{{ call.duration_ms | duration_label }}</span>
+    {% if call.error_code %}
+      <span>error</span><span class="mono">{{ call.error_code }}</span>
+    {% endif %}
+  </div>
+</li>

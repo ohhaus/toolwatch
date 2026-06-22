@@ -1,0 +1,31 @@
+{% if events %}
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th scope="col">Event</th>
+        <th scope="col">Created</th>
+        <th scope="col">Actor</th>
+        <th scope="col">Trace</th>
+        <th scope="col">Correlation</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for event in events %}
+        <tr>
+          <td>
+            <strong>{{ event.event_type }}</strong>
+          </td>
+          <td>
+            <time datetime="{{ event.created_at | isoformat_utc }}">{{ event.created_at | humanize_utc }}</time>
+          </td>
+          <td>{{ event.actor_type }}</td>
+          <td class="mono">{{ event.trace_id or '—' }}</td>
+          <td class="mono">{{ event.correlation_id or '—' }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% include "components/pagination.html" %}
+{% else %}
+  {% include "components/empty_state.html" %}
+{% endif %}

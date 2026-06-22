@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Audit{% endblock %}
+{% block content %}
+  <h1 class="page-title">Audit events</h1>
+  <form class="filters" method="get" action="{{ url('audit_list') }}">
+    <label>
+      Event type
+      <select name="event_type">
+        <option value="">any</option>
+        {% for value in event_types %}
+          <option value="{{ value }}" {% if filters.event_type == value %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Trace ID
+      <input type="text" name="trace_id" value="{{ filters.trace_id or '' }}" pattern="[0-9a-f]{0,32}" maxlength="32" />
+    </label>
+    <label>
+      Correlation ID
+      <input type="text" name="correlation_id" value="{{ filters.correlation_id or '' }}" maxlength="36" />
+    </label>
+    <label>
+      Page size
+      <input type="number" name="limit" min="1" max="{{ max_page_size }}" value="{{ pagination.limit }}" />
+    </label>
+    <button type="submit" class="button">Apply</button>
+  </form>
+  {% include "audit/_table.html" %}
+{% endblock %}

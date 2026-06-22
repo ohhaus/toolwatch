@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Attack Lab{% endblock %}
+{% block content %}
+  <h1 class="page-title">Attack Lab</h1>
+  <p class="note">
+    Attacks are predefined scenarios. The dashboard does not accept arbitrary tools or
+    payloads. Each scenario uses the real ToolWatch execution pipeline.
+  </p>
+  {% if not attack_lab_enabled %}
+    <p class="warning" role="alert">Attack Lab is disabled.</p>
+  {% else %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Scenario</th>
+          <th scope="col">Category</th>
+          <th scope="col">Severity</th>
+          <th scope="col">Tool</th>
+          <th scope="col">Expected outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for scenario in scenarios %}
+          <tr>
+            <td>
+              <a href="{{ url('attack_detail', scenario_id=scenario.id) }}"><strong>{{ scenario.name }}</strong></a>
+              <p class="muted">{{ scenario.description }}</p>
+            </td>
+            <td>{{ scenario.category }}</td>
+            <td>
+              <span class="badge {{ scenario.severity | risk_tone }}">{{ scenario.severity }}</span>
+            </td>
+            <td class="mono">{{ scenario.tool_name }}@{{ scenario.tool_version }}</td>
+            <td>
+              {% if scenario.expected_decision %}
+                <span class="chip">decision:{{ scenario.expected_decision }}</span>
+              {% endif %}
+              {% if scenario.expected_status %}
+                <span class="chip">status:{{ scenario.expected_status }}</span>
+              {% endif %}
+              {% if scenario.expected_risk %}
+                <span class="chip">risk:{{ scenario.expected_risk }}</span>
+              {% endif %}
+              {% for code in scenario.expected_flags %}
+                <span class="chip">flag:{{ code }}</span>
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

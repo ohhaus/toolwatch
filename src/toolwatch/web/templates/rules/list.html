@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Rules{% endblock %}
+{% block content %}
+  <h1 class="page-title">Blocking rules</h1>
+  <p class="note">Rules are read-only in the dashboard. Changes are made through the API after review.</p>
+  {% include "rules/_table.html" %}
+{% endblock %}

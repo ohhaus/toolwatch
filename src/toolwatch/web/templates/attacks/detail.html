@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Attack {{ scenario.name }}{% endblock %}
+{% block content %}
+  <a class="back-link" href="{{ url('attacks_index') }}">← Attack Lab</a>
+  <h1 class="page-title">{{ scenario.name }}</h1>
+  <p>{{ scenario.description }}</p>
+  <dl class="meta">
+    <dt>ID</dt><dd class="mono">{{ scenario.id }}</dd>
+    <dt>Category</dt><dd>{{ scenario.category }}</dd>
+    <dt>Severity</dt>
+    <dd><span class="badge {{ scenario.severity | risk_tone }}">{{ scenario.severity }}</span></dd>
+    <dt>Tool</dt><dd class="mono">{{ scenario.tool_name }}@{{ scenario.tool_version }}</dd>
+    {% if scenario.expected_decision %}
+      <dt>Expected decision</dt><dd><span class="badge {{ scenario.expected_decision | decision_tone }}">{{ scenario.expected_decision }}</span></dd>
+    {% endif %}
+    {% if scenario.expected_status %}
+      <dt>Expected status</dt><dd><span class="badge {{ scenario.expected_status | status_tone }}">{{ scenario.expected_status }}</span></dd>
+    {% endif %}
+    {% if scenario.expected_risk %}
+      <dt>Expected risk</dt><dd><span class="badge {{ scenario.expected_risk | risk_tone }}">{{ scenario.expected_risk }}</span></dd>
+    {% endif %}
+    {% if scenario.expected_flags %}
+      <dt>Expected flags</dt>
+      <dd>{% for flag in scenario.expected_flags %}<span class="chip">{{ flag }}</span>{% endfor %}</dd>
+    {% endif %}
+  </dl>
+
+  {% if attack_lab_enabled %}
+    <form method="post" action="{{ url('attack_run', scenario_id=scenario.id) }}">
+      <button type="submit" class="button is-primary">Run scenario</button>
+      <p class="muted">
+        Runs through the real ToolWatch execution pipeline. The result is rendered as
+        escaped data.
+      </p>
+    </form>
+  {% else %}
+    <p class="warning" role="alert">Attack Lab is disabled in this environment.</p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Sessions{% endblock %}
+{% block content %}
+  <h1 class="page-title">Sessions</h1>
+  <form
+    class="filters"
+    method="get"
+    action="{{ url('sessions_list') }}"
+    hx-get="{{ url('sessions_table') }}"
+    hx-target="#sessions-table"
+    hx-trigger="change, submit"
+    hx-swap="outerHTML"
+  >
+    <label>
+      Status
+      <select name="status">
+        <option value="">any</option>
+        {% for value in ('active', 'completed', 'failed') %}
+          <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Agent ID
+      <input type="text" name="agent_id" value="{{ filters.agent_id or '' }}" maxlength="36" pattern="[0-9a-fA-F-]{0,36}" />
+    </label>
+    <label>
+      Page size
+      <input type="number" name="limit" min="1" max="{{ max_page_size }}" value="{{ pagination.limit }}" />
+    </label>
+    <button type="submit" class="button">Apply</button>
+  </form>
+  <section id="sessions-table" aria-live="polite">
+    {% include "sessions/_table.html" %}
+  </section>
+{% endblock %}

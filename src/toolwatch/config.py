@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     otel_semconv_stability_opt_in: str = "gen_ai_latest_experimental"
     metrics_enabled: bool = True
     metrics_path: str = Field(default="/metrics", pattern=r"^/[A-Za-z0-9/_-]*$")
+    dashboard_enabled: bool = True
+    dashboard_prefix: str = Field(default="/ui", pattern=r"^/[A-Za-z0-9/_-]*$")
+    dashboard_page_size: int = Field(default=25, ge=1, le=100)
+    dashboard_max_page_size: int = Field(default=100, ge=1, le=500)
+    dashboard_refresh_seconds: int = Field(default=10, ge=5, le=3_600)
+    attack_lab_enabled: bool = True
+    jaeger_ui_public_url: str | None = None
 
     @model_validator(mode="after")
     def validate_redaction_key(self) -> "Settings":

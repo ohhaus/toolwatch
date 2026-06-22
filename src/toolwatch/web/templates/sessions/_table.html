@@ -1,0 +1,51 @@
+<div id="sessions-table">
+  {% if sessions %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Session</th>
+          <th scope="col">Agent</th>
+          <th scope="col">Provider / Model</th>
+          <th scope="col">Status</th>
+          <th scope="col">Started</th>
+          <th scope="col">Calls</th>
+          <th scope="col">Highest risk</th>
+          <th scope="col">Blocked</th>
+          <th scope="col">Flagged</th>
+          <th scope="col">Failed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in sessions %}
+          <tr>
+            <td>
+              <a href="{{ url('session_detail', session_id=item.id) }}">{{ item.id }}</a>
+            </td>
+            <td>{{ item.agent.name }}</td>
+            <td>{{ item.agent.provider }} / {{ item.agent.model_name }}</td>
+            <td>
+              {% with value = item.status %}
+                {% include "components/status_badge.html" %}
+              {% endwith %}
+            </td>
+            <td>
+              <time datetime="{{ item.started_at | isoformat_utc }}">{{ item.started_at | humanize_utc }}</time>
+            </td>
+            <td>{{ item.tool_call_count }}</td>
+            <td>
+              {% with value = item.highest_risk %}
+                {% include "components/risk_badge.html" %}
+              {% endwith %}
+            </td>
+            <td>{{ item.blocked_count }}</td>
+            <td>{{ item.flagged_count }}</td>
+            <td>{{ item.failed_count }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% include "components/pagination.html" %}
+  {% else %}
+    {% include "components/empty_state.html" %}
+  {% endif %}
+</div>

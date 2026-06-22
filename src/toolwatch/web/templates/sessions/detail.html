@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Session {{ session.id }}{% endblock %}
+{% block content %}
+  <a class="back-link" href="{{ url('sessions_list') }}">← Sessions</a>
+  <h1 class="page-title">Session {{ session.id }}</h1>
+  <dl class="meta">
+    <dt>Agent</dt>
+    <dd>{{ session.agent.name }} ({{ session.agent.provider }} / {{ session.agent.model_name }}{% if session.agent.version %} v{{ session.agent.version }}{% endif %})</dd>
+    <dt>Status</dt>
+    <dd>{% with value = session.status %}{% include "components/status_badge.html" %}{% endwith %}</dd>
+    <dt>Started</dt>
+    <dd><time datetime="{{ session.started_at | isoformat_utc }}">{{ session.started_at | humanize_utc }}</time></dd>
+    <dt>Finished</dt>
+    <dd>
+      {% if session.finished_at %}
+        <time datetime="{{ session.finished_at | isoformat_utc }}">{{ session.finished_at | humanize_utc }}</time>
+      {% else %}—{% endif %}
+    </dd>
+    {% if session.external_session_id %}
+      <dt>External ID</dt>
+      <dd>{{ session.external_session_id }}</dd>
+    {% endif %}
+  </dl>
+
+  <section class="panel" aria-labelledby="timeline-heading">
+    <h2 id="timeline-heading">Tool-call timeline</h2>
+    {% if session.tool_calls %}
+      <ol class="timeline">
+        {% for call in session.tool_calls %}
+          {% include "tool_calls/timeline_item.html" %}
+        {% endfor %}
+      </ol>
+    {% else %}
+      {% include "components/empty_state.html" %}
+    {% endif %}
+  </section>
+
+  <section class="panel" aria-labelledby="audit-heading">
+    <h2 id="audit-heading">Audit timeline</h2>
+    {% if session.audit_events %}
+      <ol class="timeline audit">
+        {% for event in session.audit_events %}
+          <li class="timeline-item">
+            <div class="timeline-meta">
+              <strong>{{ event.event_type }}</strong>
+              <time datetime="{{ event.created_at | isoformat_utc }}">{{ event.created_at | humanize_utc }}</time>
+            </div>
+            <div class="kv">
+              <span>actor</span><span>{{ event.actor_type }}</span>
+              {% if event.trace_id %}<span>trace</span><span class="mono">{{ event.trace_id }}</span>{% endif %}
+              {% if event.correlation_id %}<span>correlation</span><span class="mono">{{ event.correlation_id }}</span>{% endif %}
+            </div>
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      {% include "components/empty_state.html" %}
+    {% endif %}
+  </section>
+{% endblock %}

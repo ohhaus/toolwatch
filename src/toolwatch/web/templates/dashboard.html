@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · Dashboard{% endblock %}
+{% block content %}
+  <h1 class="page-title">Dashboard</h1>
+  <section class="summary-grid" aria-label="Summary counters">
+    <div class="summary-card">
+      <span class="summary-label">Sessions</span>
+      <span class="summary-value">{{ summary.total_sessions }}</span>
+      <span class="summary-sub">{{ summary.active_sessions }} active</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Tool calls</span>
+      <span class="summary-value">{{ summary.total_tool_calls }}</span>
+    </div>
+    <div class="summary-card tone-danger">
+      <span class="summary-label">Blocked</span>
+      <span class="summary-value">{{ summary.blocked_tool_calls }}</span>
+    </div>
+    <div class="summary-card tone-warning">
+      <span class="summary-label">Flagged</span>
+      <span class="summary-value">{{ summary.flagged_tool_calls }}</span>
+    </div>
+    <div class="summary-card tone-error">
+      <span class="summary-label">Failed</span>
+      <span class="summary-value">{{ summary.failed_tool_calls }}</span>
+    </div>
+    <div class="summary-card tone-error">
+      <span class="summary-label">Timeouts</span>
+      <span class="summary-value">{{ summary.timed_out_tool_calls }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Replayed</span>
+      <span class="summary-value">{{ summary.replayed_tool_calls }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Risk flags</span>
+      <span class="summary-value">{{ summary.risk_flags }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Redaction events</span>
+      <span class="summary-value">{{ summary.redaction_events }}</span>
+    </div>
+  </section>
+
+  <section
+    class="panel"
+    aria-labelledby="recent-sessions-heading"
+    hx-get="{{ url('dashboard_recent_sessions') }}"
+    hx-trigger="every {{ refresh_seconds }}s"
+    hx-target="this"
+    hx-swap="outerHTML"
+  >
+    <h2 id="recent-sessions-heading">Recent sessions</h2>
+    {% include "sessions/_table.html" %}
+  </section>
+
+  <section class="panel" aria-labelledby="high-risk-heading">
+    <h2 id="high-risk-heading">Recent high-risk calls</h2>
+    {% if summary.recent_high_risk_calls %}
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th scope="col">Sequence</th>
+            <th scope="col">Tool</th>
+            <th scope="col">Status</th>
+            <th scope="col">Decision</th>
+            <th scope="col">Risk</th>
+            <th scope="col">Flags</th>
+            <th scope="col">Created</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for call in summary.recent_high_risk_calls %}
+            <tr>
+              <td>
+                <a href="{{ url('tool_call_detail', call_id=call.id) }}">#{{ call.sequence_number }}</a>
+              </td>
+              <td>{{ call.tool_name }}@{{ call.tool_version }}</td>
+              <td>
+                {% with tone = call.status | status_tone %}
+                  <span class="badge {{ tone }}">{{ call.status }}</span>
+                {% endwith %}
+              </td>
+              <td>
+                {% with tone = call.decision | decision_tone %}
+                  <span class="badge {{ tone }}">{{ call.decision }}</span>
+                {% endwith %}
+              </td>
+              <td>
+                {% with tone = call.risk_level | risk_tone %}
+                  <span class="badge {{ tone }}">{{ call.risk_level }}</span>
+                {% endwith %}
+              </td>
+              <td>
+                {% for code in call.flag_codes %}
+                  <span class="chip">{{ code }}</span>
+                {% endfor %}
+              </td>
+              <td>
+                <time datetime="{{ call.created_at | isoformat_utc }}">
+                  {{ call.created_at | humanize_utc }}
+                </time>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      {% include "components/empty_state.html" %}
+    {% endif %}
+  </section>
+{% endblock %}

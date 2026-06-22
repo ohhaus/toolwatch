@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}ToolWatch · {{ code }}{% endblock %}
+{% block content %}
+  <section class="panel" role="alert">
+    <h1 class="page-title">{{ heading }}</h1>
+    <p>{{ message }}</p>
+    <p class="correlation">Correlation ID: <code>{{ correlation_id }}</code></p>
+    <p><a class="button" href="{{ url('dashboard_home') }}">Return to dashboard</a></p>
+  </section>
+{% endblock %}
