@@ -46,7 +46,7 @@ def main() -> int:
         venv = Path(directory)
         _run(["uv", "venv", "--python", "3.13", str(venv)])
         python = venv / "bin" / "python"
-        _run(["uv", "pip", "install", "--offline", "--python", str(python), str(wheel)])
+        _run(["uv", "pip", "install", "--python", str(python), str(wheel)])
         _run([str(python), "-c", "import toolwatch; assert toolwatch.__version__ == '0.1.0'"])
         _run([str(python), "-m", "toolwatch.agent", "--help"])
         smoke = """
